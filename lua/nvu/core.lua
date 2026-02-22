@@ -19,4 +19,14 @@ function M.select(cond, tru, fals)
     if cond then return tru else return fals end
 end
 
+--- Resolves a value that may be a function or a plain value.
+--- @param val any The value or function to resolve
+--- @return any The resolved value (result of calling val if it's a function, otherwise val itself)
+function M.resolve(val)
+    if type(val) == 'function' then
+        return val()
+    end
+    return val
+end
+
 return M
