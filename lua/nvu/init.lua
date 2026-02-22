@@ -10,5 +10,6 @@ M.path = require'nvu.path'
 M.buffer = require'nvu.buffer'
 M.env = require'nvu.env'
 M.highlight = require'nvu.highlight'
+M.telescope = require'nvu.telescope'
 
 return M
