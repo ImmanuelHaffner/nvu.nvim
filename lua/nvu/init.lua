@@ -4,6 +4,7 @@
 
 local M = {}
 
+M.core = require'nvu.core'
 M.string = require'nvu.string'
 M.path = require'nvu.path'
 M.buffer = require'nvu.buffer'
