@@ -13,6 +13,7 @@ A collection of utility functions for Neovim plugin and configuration developmen
 - **Environment detection** - Detect SSH, headless, client-server connections
 - **Highlight utilities** - Query highlight group attributes
 - **Telescope integration** - Enhanced entry makers, previewers, and adaptive pickers extension
+- **CodeCompanion integration** - Editor context tool and variable for LLM-assisted editing
 
 ## Installation
 
@@ -232,6 +233,90 @@ local previewer = previewers.git_commit{
     include_file = true,  -- Scope to current file
 }
 ```
+
+---
+
+## CodeCompanion Extension: Editor Context
+
+nvu.nvim includes a CodeCompanion extension that provides the LLM with context about your current editor state. It registers both a **tool** and a **variable**.
+
+### Features
+
+- **`editor_context` tool** - A tool the LLM can call to get information about visible buffers, cursor position, and active window
+- **`#editor` variable** - A variable users can type in chat to include editor context in their message
+
+### What It Provides
+
+The extension gives the LLM access to:
+
+- **Active buffer** - File path, filetype, line count, modified status
+- **Cursor position** - Line number, column, and content of the current line
+- **Visible buffers** - All buffers visible across tabs and windows with their visible line ranges
+- **Window/tab structure** - Which window and tab is currently active
+
+### Setup
+
+```lua
+require('codecompanion').setup{
+    extensions = {
+        editor_context = {
+            callback = 'codecompanion._extensions.editor_context',
+            opts = {
+                -- Set to true to require user approval before the tool runs
+                require_approval_before = false,
+            },
+        },
+    },
+}
+```
+
+### Usage
+
+#### Using the `#editor` Variable
+
+Type `#editor` in your chat message to include the current editor context:
+
+```
+#editor Explain what this file does
+```
+
+The variable expands to a formatted Markdown block containing all visible buffers, cursor position, and active buffer information.
+
+#### Using the `editor_context` Tool
+
+The LLM can call the `editor_context` tool automatically when it needs to understand your current editing context. The tool is designed to be lightweight and is called when:
+
+- You ask about "this file", "current buffer", or "what I'm looking at"
+- The LLM needs cursor position for targeted edits
+- You're asking about something visible in your editor
+- The LLM is unsure which file you're referring to
+
+### Exported Functions
+
+The extension exports functions accessible via `require('codecompanion').extensions.editor_context`:
+
+```lua
+local ext = require('codecompanion').extensions.editor_context
+
+-- Get raw editor context data
+local context = ext.get_context()
+-- Returns: { active = {...}, cursor = {...}, tabs = {...} }
+
+-- Get formatted Markdown string
+local formatted = ext.get_formatted_context()
+-- Returns: "# Editor Context\n\n## Active Buffer\n..."
+
+-- Get info about a specific buffer
+local info = ext.get_buffer_info(bufnr)
+-- Returns: { path, name, filetype, lines, modified, ... }
+```
+
+### Dependencies
+
+The CodeCompanion extension requires:
+- [codecompanion.nvim](https://github.com/olimorris/codecompanion.nvim)
+
+---
 
 ## Telescope Extension: Adaptive Pickers
 
