@@ -11,5 +11,6 @@ M.buffer = require'nvu.buffer'
 M.env = require'nvu.env'
 M.highlight = require'nvu.highlight'
 M.telescope = require'nvu.telescope'
+M.editor = require'nvu.editor'
 
 return M
