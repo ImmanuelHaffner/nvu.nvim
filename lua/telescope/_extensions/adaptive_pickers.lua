@@ -1,5 +1,5 @@
 --- Adaptive Pickers - Telescope extension with dynamic path shortening and enhanced previewers
---- @module telescope._extensions.adaptive_pickers
+--- @module "telescope._extensions.adaptive_pickers"
 
 local has_telescope, telescope = pcall(require, 'telescope')
 if not has_telescope then

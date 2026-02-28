@@ -3,10 +3,11 @@
 --- Registers both a tool (editor_context) and a variable (#editor).
 
 local editor = require'nvu.editor'
+local llm = require'nvu.llm'
 
 local fmt = string.format
 
----@class CodeCompanion.Extension.EditorContext
+--- @class CodeCompanion.Extension.EditorContext
 local Extension = {}
 
 --- System prompt for the editor_context tool
@@ -57,8 +58,8 @@ local TOOL_SCHEMA = {
 }
 
 ---Execute the editor context tool
----@param buffer_context? table The buffer context from CodeCompanion chat
----@return { status: "success"|"error", data: string }
+--- @param buffer_context? table The buffer context from CodeCompanion chat
+--- @return { status: "success"|"error", data: string }
 local function execute_tool(buffer_context)
     local ok, context = pcall(editor.get_context, buffer_context)
     if not ok then
@@ -68,7 +69,7 @@ local function execute_tool(buffer_context)
         }
     end
 
-    local ok2, formatted = pcall(editor.format_context, context)
+    local ok2, formatted = pcall(llm.format_context, context)
     if not ok2 then
         return {
             status = "error",
@@ -83,8 +84,8 @@ local function execute_tool(buffer_context)
 end
 
 ---Create the tool definition
----@param opts table Extension options
----@return table Tool definition
+--- @param opts table Extension options
+--- @return table Tool definition
 local function create_tool(opts)
     local helpers = require("codecompanion.interactions.chat.tools.builtin.helpers")
     local log = require("codecompanion.utils.log")
@@ -94,10 +95,10 @@ local function create_tool(opts)
         system_prompt = TOOL_SYSTEM_PROMPT,
         cmds = {
             ---Execute the editor context command
-            ---@param self table Tool instance with access to chat context
-            ---@param args table The arguments from the LLM's tool call (none required)
-            ---@param input? any The output from the previous function call
-            ---@return { status: "success"|"error", data: string }
+            --- @param self table Tool instance with access to chat context
+            --- @param args table The arguments from the LLM's tool call (none required)
+            --- @param input? any The output from the previous function call
+            --- @return { status: "success"|"error", data: string }
             function(self, args, input)
                 -- Get buffer_context from chat (the window/buffer that was active when chat opened)
                 local buffer_context = self.chat and self.chat.buffer_context
@@ -106,25 +107,25 @@ local function create_tool(opts)
         },
         schema = TOOL_SCHEMA,
         handlers = {
-            ---@param tools CodeCompanion.Tools The tool object
-            ---@return nil
+            --- @param tools CodeCompanion.Tools The tool object
+            --- @return nil
             on_exit = function(tools)
                 log:trace("[Editor Context Tool] on_exit handler executed")
             end,
         },
         output = {
             ---The message which is shared with the user when asking for their approval
-            ---@param self CodeCompanion.Tools.Tool
-            ---@param tools CodeCompanion.Tools
-            ---@return nil|string
+            --- @param self CodeCompanion.Tools.Tool
+            --- @param tools CodeCompanion.Tools
+            --- @return nil|string
             prompt = function(self, tools)
                 return "Get editor context (visible buffers, cursor position)?"
             end,
 
-            ---@param self table
-            ---@param tools CodeCompanion.Tools
-            ---@param cmd table The command that was executed
-            ---@param stdout table The output from the command
+            --- @param self table
+            --- @param tools CodeCompanion.Tools
+            --- @param cmd table The command that was executed
+            --- @param stdout table The output from the command
             success = function(self, tools, cmd, stdout)
                 local chat = tools.chat
                 local output = vim.iter(stdout):flatten():join("\n")
@@ -136,10 +137,10 @@ local function create_tool(opts)
                 chat:add_tool_output(self, llm_output, user_output)
             end,
 
-            ---@param self table
-            ---@param tools CodeCompanion.Tools
-            ---@param cmd table
-            ---@param stderr table The error output from the command
+            --- @param self table
+            --- @param tools CodeCompanion.Tools
+            --- @param cmd table
+            --- @param stderr table The error output from the command
             error = function(self, tools, cmd, stderr)
                 local chat = tools.chat
                 local errors = vim.iter(stderr):flatten():join("\n")
@@ -149,11 +150,11 @@ local function create_tool(opts)
             end,
 
             ---Rejection message back to the LLM
-            ---@param self table
-            ---@param tools CodeCompanion.Tools
-            ---@param cmd table
-            ---@param reject_opts table
-            ---@return nil
+            --- @param self table
+            --- @param tools CodeCompanion.Tools
+            --- @param cmd table
+            --- @param reject_opts table
+            --- @return nil
             rejected = function(self, tools, cmd, reject_opts)
                 local message = "The user rejected the editor context tool"
                 reject_opts = vim.tbl_extend("force", { message = message }, reject_opts or {})
@@ -164,7 +165,7 @@ local function create_tool(opts)
 end
 
 ---Setup the extension
----@param opts table Configuration options
+--- @param opts table Configuration options
 function Extension.setup(opts)
     opts = opts or {}
 
@@ -183,7 +184,7 @@ function Extension.setup(opts)
     cc_config.config.interactions.chat.variables["editor"] = {
         callback = function(self)
             local buffer_context = self.Chat and self.Chat.buffer_context
-            return editor.get_formatted_context(buffer_context)
+            return llm.get_formatted_context(buffer_context)
         end,
         description = "Get information about visible buffers, active buffer, and cursor position",
         opts = {
@@ -195,18 +196,18 @@ end
 -- Exported functions accessible via codecompanion.extensions.editor_context
 Extension.exports = {
     ---Get the raw editor context data
-    ---@param opts? { winnr?: number, bufnr?: number }
-    ---@return table
+    --- @param opts? { winnr?: number, bufnr?: number }
+    --- @return table
     get_context = editor.get_context,
 
     ---Get formatted editor context string
-    ---@param opts? { winnr?: number, bufnr?: number }
-    ---@return string
-    get_formatted_context = editor.get_formatted_context,
+    --- @param opts? { winnr?: number, bufnr?: number }
+    --- @return string
+    get_formatted_context = llm.get_formatted_context,
 
     ---Get buffer info
-    ---@param bufnr number
-    ---@return table|nil
+    --- @param bufnr number
+    --- @return table|nil
     get_buffer_info = editor.get_buffer_info,
 }
 

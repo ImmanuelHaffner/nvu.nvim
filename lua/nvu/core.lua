@@ -1,5 +1,5 @@
 --- Core utilities
---- @module nvu.core
+--- @module "nvu.core"
 
 local M = {}
 

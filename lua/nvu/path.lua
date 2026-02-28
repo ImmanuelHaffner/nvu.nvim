@@ -1,5 +1,5 @@
 --- Path utilities
---- @module nvu.path
+--- @module "nvu.path"
 
 local M = {}
 

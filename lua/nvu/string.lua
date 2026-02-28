@@ -1,5 +1,5 @@
 --- String utilities
---- @module nvu.string
+--- @module "nvu.string"
 
 local M = {}
 

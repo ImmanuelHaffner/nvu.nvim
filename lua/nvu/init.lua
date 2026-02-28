@@ -1,6 +1,6 @@
 --- nvu.nvim - Neovim Utilities
 --- A collection of utility functions for Neovim plugin and config development.
---- @module nvu
+--- @module "nvu"
 
 local M = {}
 
@@ -12,5 +12,6 @@ M.env = require'nvu.env'
 M.highlight = require'nvu.highlight'
 M.telescope = require'nvu.telescope'
 M.editor = require'nvu.editor'
+M.llm = require'nvu.llm'
 
 return M

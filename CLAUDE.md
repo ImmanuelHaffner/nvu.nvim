@@ -24,6 +24,7 @@ This library is used by our main Neovim configuration at `~/Documents/dotfiles/n
     │   ├── env.lua                     # Environment detection (SSH, headless, etc.)
     │   ├── highlight.lua               # Query highlight group attributes
     │   ├── editor.lua                  # Editor context (buffers, cursor, windows)
+    │   ├── llm.lua                     # LLM formatting utilities
     │   └── telescope/                  # Telescope integration
     │       ├── init.lua                # Re-exports telescope submodules
     │       ├── utils.lua               # Layout dimension helpers
@@ -42,7 +43,7 @@ This library is used by our main Neovim configuration at `~/Documents/dotfiles/n
 - Maximum line width: 120 columns
 - Use `require'module'` syntax (single quotes, no parentheses for simple requires)
 - Prefer `vim.api.*` methods over legacy Vimscript
-- Use LuaDoc annotations (`---@param`, `---@return`, `---@class`)
+- Use LuaDoc annotations with a space after `---` (e.g., `--- @param`, `--- @return`, `--- @class`, `--- @module`)
 - Modules return a table `M` with public functions
 
 ### Module Pattern
@@ -94,13 +95,18 @@ return Extension
 ## Module Descriptions
 
 ### `nvu.editor`
-Provides editor context information for AI assistants. Used by the CodeCompanion extension.
+Provides editor context information. Gathers data about buffers, windows, tabs, and cursor position.
 
 Key functions:
 - `get_buffer_info(bufnr)` - Get detailed info about a buffer
 - `get_context(opts)` - Get full editor context (tabs, windows, buffers, cursor)
+
+### `nvu.llm`
+LLM formatting utilities. Formats editor context for consumption by AI assistants.
+
+Key functions:
 - `format_context(context)` - Format context as Markdown for LLM consumption
-- `get_formatted_context(opts)` - Convenience wrapper combining the above
+- `get_formatted_context(opts)` - Convenience wrapper that calls `editor.get_context()` and formats it
 
 ### `nvu.path`
 Smart path shortening that progressively abbreviates directory names to fit a target length.

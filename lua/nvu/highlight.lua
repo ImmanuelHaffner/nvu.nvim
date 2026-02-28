@@ -1,5 +1,5 @@
 --- Highlight group utilities
---- @module nvu.highlight
+--- @module "nvu.highlight"
 
 local M = {}
 

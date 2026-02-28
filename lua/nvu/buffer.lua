@@ -1,5 +1,5 @@
 --- Buffer and window utilities
---- @module nvu.buffer
+--- @module "nvu.buffer"
 
 local M = {}
 

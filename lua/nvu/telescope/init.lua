@@ -1,5 +1,5 @@
 --- Telescope utilities for nvu.nvim
---- @module nvu.telescope
+--- @module "nvu.telescope"
 local M = {}
 
 M.utils = require'nvu.telescope.utils'

@@ -1,5 +1,5 @@
 --- Environment detection utilities
---- @module nvu.env
+--- @module "nvu.env"
 
 local M = {}
 

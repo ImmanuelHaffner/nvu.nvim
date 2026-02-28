@@ -1,5 +1,5 @@
 --- Telescope entry maker utilities
---- @module nvu.telescope.entry_makers
+--- @module "nvu.telescope.entry_makers"
 local M = {}
 
 local core = require'nvu.core'

@@ -1,5 +1,5 @@
 --- Telescope previewer utilities
---- @module nvu.telescope.previewers
+--- @module "nvu.telescope.previewers"
 local M = {}
 
 local core = require'nvu.core'

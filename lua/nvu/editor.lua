@@ -1,14 +1,50 @@
---- Editor context utilities
---- Provides information about visible buffers, active buffer, and cursor position.
---- @module nvu.editor
+---Editor context utilities
+---Provides information about visible buffers, windows, tabs, and cursor position.
+--- @module "nvu.editor"
+--- @see nvu.llm For formatting utilities
 
 local M = {}
 
-local fmt = string.format
+--- @class nvu.editor.BufferInfo
+--- @field bufnr number Buffer number
+--- @field name string Full path
+--- @field relative_path string Path relative to cwd
+--- @field filetype string Filetype
+--- @field buftype string Buffer type (empty for normal files)
+--- @field line_count number Total lines
+--- @field is_modified boolean Has unsaved changes
+--- @field is_readonly boolean Is read-only
+
+--- @class nvu.editor.Cursor
+--- @field line number 1-based line number
+--- @field column number 0-based column number
+--- @field column_1based number 1-based column number
+--- @field current_line_content? string Content of the current line
+
+--- @class nvu.editor.WindowInfo
+--- @field winnr number Window handle
+--- @field is_active boolean Is the active window
+--- @field buffer nvu.editor.BufferInfo Buffer info
+--- @field width number Window width
+--- @field height number Window height
+--- @field topline? number First visible line
+--- @field botline? number Last visible line
+
+--- @class nvu.editor.TabInfo
+--- @field tabnr number Tab handle
+--- @field is_active boolean Is the active tab
+--- @field windows nvu.editor.WindowInfo[] Windows in this tab
+
+--- @class nvu.editor.Context
+--- @field tabs nvu.editor.TabInfo[] All tabs
+--- @field active_tab number Active tab handle
+--- @field active_win number Active window handle
+--- @field active_buf number Active buffer number
+--- @field cursor nvu.editor.Cursor Cursor position info
 
 ---Get information about a buffer
----@param bufnr number The buffer number
----@return table|nil Buffer info or nil if invalid
+--- @param bufnr number The buffer number
+--- @return nvu.editor.BufferInfo|nil Buffer info or nil if invalid
 function M.get_buffer_info(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return nil
@@ -39,8 +75,8 @@ function M.get_buffer_info(bufnr)
 end
 
 ---Get all visible buffers across all tabs and windows
----@param opts? { winnr?: number, bufnr?: number } Optional window/buffer context
----@return table { tabs: table[], active_tab: number, active_win: number, active_buf: number, cursor: table }
+--- @param opts? { winnr?: number, bufnr?: number } Optional window/buffer context
+--- @return table { tabs: table[], active_tab: number, active_win: number, active_buf: number, cursor: table }
 function M.get_context(opts)
   opts = opts or {}
 
@@ -123,81 +159,6 @@ function M.get_context(opts)
   end
 
   return result
-end
-
----Format the editor context for LLM consumption
----@param context table The editor context from get_context()
----@return string Formatted output
-function M.format_context(context)
-  local lines = {}
-
-  table.insert(lines, "# Editor Context")
-  table.insert(lines, "")
-
-  -- Active buffer and cursor info
-  local active_buf_info = M.get_buffer_info(context.active_buf)
-  if active_buf_info then
-    table.insert(lines, "## Active Buffer")
-    table.insert(lines, fmt("- **File**: `%s`", active_buf_info.relative_path ~= "" and active_buf_info.relative_path or "[No Name]"))
-    table.insert(lines, fmt("- **Buffer**: %d", context.active_buf))
-    table.insert(lines, fmt("- **Window**: %d (Tab %d)", context.active_win, context.active_tab))
-    if active_buf_info.filetype ~= "" then
-      table.insert(lines, fmt("- **Filetype**: `%s`", active_buf_info.filetype))
-    end
-    table.insert(lines, fmt("- **Total Lines**: %d", active_buf_info.line_count))
-    table.insert(lines, fmt("- **Modified**: %s", active_buf_info.is_modified and "Yes" or "No"))
-    table.insert(lines, "")
-  end
-
-  -- Cursor position
-  table.insert(lines, "## Cursor Position")
-  table.insert(lines, fmt("- **Line**: %d", context.cursor.line))
-  table.insert(lines, fmt("- **Column**: %d", context.cursor.column_1based))
-  if context.cursor.current_line_content then
-    table.insert(lines, fmt("- **Current Line Content**:\n  ```\n  %s\n  ```", context.cursor.current_line_content))
-  end
-  table.insert(lines, "")
-
-  -- Visible buffers across all tabs
-  table.insert(lines, "## Visible Buffers")
-  table.insert(lines, "")
-
-  for _, tab in ipairs(context.tabs) do
-    local tab_marker = tab.is_active and " (active)" or ""
-    table.insert(lines, fmt("### Tab %d%s", tab.tabnr, tab_marker))
-
-    for _, win in ipairs(tab.windows) do
-      local win_marker = win.is_active and " **(active window)**" or ""
-      local buf = win.buffer
-      local buf_name = buf.relative_path ~= "" and buf.relative_path or "[No Name]"
-
-      if buf.buftype == "" or buf.buftype == nil then
-        -- Regular file buffer
-        table.insert(lines, fmt("- `%s` (buf %d, win %d)%s", buf_name, buf.bufnr, win.winnr, win_marker))
-        if buf.filetype ~= "" then
-          table.insert(lines, fmt("  - Filetype: `%s`", buf.filetype))
-        end
-        table.insert(lines, fmt("  - Lines: %d (visible: %d-%d)", buf.line_count, win.topline or 1, win.botline or buf.line_count))
-        if buf.is_modified then
-          table.insert(lines, "  - **Modified**")
-        end
-      else
-        -- Special buffer (terminal, help, etc.)
-        table.insert(lines, fmt("- [%s] `%s` (buf %d, win %d)%s", buf.buftype, buf_name, buf.bufnr, win.winnr, win_marker))
-      end
-    end
-    table.insert(lines, "")
-  end
-
-  return table.concat(lines, "\n")
-end
-
----Get formatted editor context string
----@param opts? { winnr?: number, bufnr?: number } Optional window/buffer context
----@return string Formatted editor context
-function M.get_formatted_context(opts)
-  local context = M.get_context(opts)
-  return M.format_context(context)
 end
 
 return M

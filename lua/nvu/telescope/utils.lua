@@ -1,5 +1,5 @@
 --- Telescope utility functions
---- @module nvu.telescope.utils
+--- @module "nvu.telescope.utils"
 local M = {}
 
 --- Computes layout dimensions by calling Telescope's layout strategy directly.
