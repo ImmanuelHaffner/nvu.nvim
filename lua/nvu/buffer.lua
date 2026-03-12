@@ -17,8 +17,13 @@ function M.has_width_gt(cols)
 end
 
 --- Gets the current visual selection as a string.
+--- @param escape_visual_mode? boolean If true, exit visual mode before retrieving the selection (default: `nil`/`false`)
 --- @return string The selected text, with lines joined by newlines
-function M.get_visual_selection()
+function M.get_visual_selection(escape_visual_mode)
+    if escape_visual_mode then
+        local esc = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
+        vim.api.nvim_feedkeys(esc, 'nx', false)
+    end
     local start_row, start_col = unpack(vim.api.nvim_buf_get_mark(0, '<'))
     local end_row, end_col = unpack(vim.api.nvim_buf_get_mark(0, '>'))
     local lines = vim.api.nvim_buf_get_text(0, start_row - 1, start_col, end_row - 1, end_col + 1, {})
@@ -29,7 +34,7 @@ end
 --- @param forward boolean If true, search forward; otherwise search backward
 function M.search_visual_selection(forward)
     local cursor_pos = vim.api.nvim_win_get_cursor(0)
-    local selection = M.get_visual_selection()
+    local selection = M.get_visual_selection(true)
     local escaped = vim.fn.escape(selection, '/\\')
     if forward then
         pcall(function() vim.cmd('/\\V' .. escaped) end)
