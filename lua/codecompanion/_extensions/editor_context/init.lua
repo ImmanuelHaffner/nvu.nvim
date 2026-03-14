@@ -1,6 +1,6 @@
---- CodeCompanion Extension: Editor Context
+--- CodeCompanion Extension: Neovim Context
 --- Provides the LLM with context about visible buffers, active buffer, and cursor position.
---- Registers both a tool (editor_context) and a variable (#editor).
+--- Registers both a tool (neovim_context) and an editor context item (#neovim_context).
 
 local editor = require'nvu.editor'
 local llm = require'nvu.llm'
@@ -10,8 +10,8 @@ local fmt = string.format
 --- @class CodeCompanion.Extension.EditorContext
 local Extension = {}
 
---- System prompt for the editor_context tool
-local TOOL_SYSTEM_PROMPT = [[Use the editor_context tool to understand what the user is currently looking at or working on in Neovim. This tool is lightweight and cheap to call. When in doubt, call it.
+--- System prompt for the neovim_context tool
+local TOOL_SYSTEM_PROMPT = [[Use the neovim_context tool to understand what the user is currently looking at or working on in Neovim. This tool is lightweight and cheap to call. When in doubt, call it.
 
 The tool provides:
 - The active buffer (file) and its properties (path, filetype, line count, modified status)
@@ -28,11 +28,11 @@ Call this tool when:
 - You're unsure which file or location the user is referring to
 - Several conversation turns have passed since you last checked the context]]
 
---- Tool schema for the editor_context tool
+--- Tool schema for the neovim_context tool
 local TOOL_SCHEMA = {
     type = "function",
     ["function"] = {
-        name = "editor_context",
+        name = "neovim_context",
         description = [[Get information about the current editor state in Neovim. This tool provides:
         - The currently active buffer (file being edited) and its properties
         - The exact cursor position (line and column) in the active buffer
@@ -91,7 +91,7 @@ local function create_tool(opts)
 
     return function()
         return {
-            name = "editor_context",
+            name = "neovim_context",
             system_prompt = TOOL_SYSTEM_PROMPT,
             cmds = {
                 ---Execute the editor context command (v19 signature)
@@ -110,7 +110,7 @@ local function create_tool(opts)
                 --- @param tools CodeCompanion.Tools The tool object
                 --- @return nil
                 on_exit = function(tools)
-                    log:trace("[Editor Context Tool] on_exit handler executed")
+                    log:trace("[Neovim Context Tool] on_exit handler executed")
                 end,
             },
             output = {
@@ -119,7 +119,7 @@ local function create_tool(opts)
                 --- @param tools CodeCompanion.Tools
                 --- @return nil|string
                 prompt = function(self, tools)
-                    return "Get editor context (visible buffers, cursor position)?"
+                    return "Get neovim context (visible buffers, cursor position)?"
                 end,
 
                 ---v19 output handler signature: (self, stdout, meta)
@@ -130,9 +130,9 @@ local function create_tool(opts)
                     local chat = meta.tools.chat
                     local output = vim.iter(stdout):flatten():join("\n")
 
-                    local llm_output = fmt("<editorContext>\n%s\n</editorContext>", output)
+                    local llm_output = fmt("<neovimContext>\n%s\n</neovimContext>", output)
                     -- Show full output to user with a summary first line (used as fold text)
-                    local user_output = fmt("Retrieved editor context\n%s", output)
+                    local user_output = fmt("Retrieved neovim context\n%s", output)
 
                     chat:add_tool_output(self, llm_output, user_output)
                 end,
@@ -144,7 +144,7 @@ local function create_tool(opts)
                 error = function(self, stderr, meta)
                     local chat = meta.tools.chat
                     local errors = vim.iter(stderr):flatten():join("\n")
-                    log:debug("[Editor Context Tool] Error output: %s", errors)
+                    log:debug("[Neovim Context Tool] Error output: %s", errors)
 
                     chat:add_tool_output(self, errors)
                 end,
@@ -156,7 +156,7 @@ local function create_tool(opts)
                 --- @param reject_opts table
                 --- @return nil
                 rejected = function(self, tools, cmd, reject_opts)
-                    local message = "The user rejected the editor context tool"
+                    local message = "The user rejected the neovim context tool"
                     if tools.chat then
                         tools.chat:add_tool_output(self, message)
                     end
@@ -173,8 +173,8 @@ function Extension.setup(opts)
 
     local cc_config = require("codecompanion.config")
 
-    -- Register the editor_context tool (v19: callback must be a function that returns the tool table)
-    cc_config.config.interactions.chat.tools["editor_context"] = {
+    -- Register the neovim_context tool (v19: callback must be a function that returns the tool table)
+    cc_config.config.interactions.chat.tools["neovim_context"] = {
         callback = create_tool(opts),
         description = "Get information about visible buffers, active buffer, and cursor position",
         opts = {
@@ -182,11 +182,11 @@ function Extension.setup(opts)
         },
     }
 
-    -- Register the editor variable (v19: `variables` renamed to `editor_context`)
+    -- Register the #neovim_context editor context item (v19: `variables` renamed to `editor_context`)
     local editor_context_config = cc_config.config.interactions.chat.editor_context
         or cc_config.config.interactions.chat.variables  -- fallback for older CC versions
     if editor_context_config then
-        editor_context_config["editor"] = {
+        editor_context_config["neovim_context"] = {
             callback = function(self)
                 local buffer_context = self.Chat and self.Chat.buffer_context
                 return llm.get_formatted_context(buffer_context)
