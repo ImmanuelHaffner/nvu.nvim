@@ -39,12 +39,16 @@ function M.file(opts)
             }
         end
 
+        -- Propagate bufnr from buffer entries (needed by actions like delete_buffer)
+        local bufnr = type(entry) == 'table' and entry.bufnr or nil
+
         return {
             value = entry,
             ordinal = path,
             display = display_func,
             filename = filename,
             path = path,
+            bufnr = bufnr,
         }
     end
 end
