@@ -85,83 +85,85 @@ end
 
 ---Create the tool definition
 --- @param opts table Extension options
---- @return table Tool definition
+--- @return fun(): table Tool factory function (v19 requires callback to be a function)
 local function create_tool(opts)
-    local helpers = require("codecompanion.interactions.chat.tools.builtin.helpers")
     local log = require("codecompanion.utils.log")
 
-    return {
-        name = "editor_context",
-        system_prompt = TOOL_SYSTEM_PROMPT,
-        cmds = {
-            ---Execute the editor context command
-            --- @param self table Tool instance with access to chat context
-            --- @param args table The arguments from the LLM's tool call (none required)
-            --- @param input? any The output from the previous function call
-            --- @return { status: "success"|"error", data: string }
-            function(self, args, input)
-                -- Get buffer_context from chat (the window/buffer that was active when chat opened)
-                local buffer_context = self.chat and self.chat.buffer_context
-                return execute_tool(buffer_context)
-            end,
-        },
-        schema = TOOL_SCHEMA,
-        handlers = {
-            --- @param tools CodeCompanion.Tools The tool object
-            --- @return nil
-            on_exit = function(tools)
-                log:trace("[Editor Context Tool] on_exit handler executed")
-            end,
-        },
-        output = {
-            ---The message which is shared with the user when asking for their approval
-            --- @param self CodeCompanion.Tools.Tool
-            --- @param tools CodeCompanion.Tools
-            --- @return nil|string
-            prompt = function(self, tools)
-                return "Get editor context (visible buffers, cursor position)?"
-            end,
+    return function()
+        return {
+            name = "editor_context",
+            system_prompt = TOOL_SYSTEM_PROMPT,
+            cmds = {
+                ---Execute the editor context command (v19 signature)
+                --- @param self table Tool instance with access to chat context
+                --- @param action table The arguments from the LLM's tool call
+                --- @param opts_arg { input?: any, output_cb?: fun(msg: table) } Options with input and async callback
+                --- @return { status: "success"|"error", data: string }
+                function(self, action, opts_arg)
+                    -- Get buffer_context from chat (the window/buffer that was active when chat opened)
+                    local buffer_context = self.chat and self.chat.buffer_context
+                    return execute_tool(buffer_context)
+                end,
+            },
+            schema = TOOL_SCHEMA,
+            handlers = {
+                --- @param tools CodeCompanion.Tools The tool object
+                --- @return nil
+                on_exit = function(tools)
+                    log:trace("[Editor Context Tool] on_exit handler executed")
+                end,
+            },
+            output = {
+                ---The message which is shared with the user when asking for their approval
+                --- @param self CodeCompanion.Tools.Tool
+                --- @param tools CodeCompanion.Tools
+                --- @return nil|string
+                prompt = function(self, tools)
+                    return "Get editor context (visible buffers, cursor position)?"
+                end,
 
-            --- @param self table
-            --- @param tools CodeCompanion.Tools
-            --- @param cmd table The command that was executed
-            --- @param stdout table The output from the command
-            success = function(self, tools, cmd, stdout)
-                local chat = tools.chat
-                local output = vim.iter(stdout):flatten():join("\n")
+                ---v19 output handler signature: (self, stdout, meta)
+                --- @param self table
+                --- @param stdout table The output from the command
+                --- @param meta { cmd: table, tools: CodeCompanion.Tools } Metadata
+                success = function(self, stdout, meta)
+                    local chat = meta.tools.chat
+                    local output = vim.iter(stdout):flatten():join("\n")
 
-                local llm_output = fmt("<editorContext>\n%s\n</editorContext>", output)
-                -- Show full output to user with a summary first line (used as fold text)
-                local user_output = fmt("Retrieved editor context\n%s", output)
+                    local llm_output = fmt("<editorContext>\n%s\n</editorContext>", output)
+                    -- Show full output to user with a summary first line (used as fold text)
+                    local user_output = fmt("Retrieved editor context\n%s", output)
 
-                chat:add_tool_output(self, llm_output, user_output)
-            end,
+                    chat:add_tool_output(self, llm_output, user_output)
+                end,
 
-            --- @param self table
-            --- @param tools CodeCompanion.Tools
-            --- @param cmd table
-            --- @param stderr table The error output from the command
-            error = function(self, tools, cmd, stderr)
-                local chat = tools.chat
-                local errors = vim.iter(stderr):flatten():join("\n")
-                log:debug("[Editor Context Tool] Error output: %s", errors)
+                ---v19 output handler signature: (self, stderr, meta)
+                --- @param self table
+                --- @param stderr table The error output from the command
+                --- @param meta { cmd: table, tools: CodeCompanion.Tools } Metadata
+                error = function(self, stderr, meta)
+                    local chat = meta.tools.chat
+                    local errors = vim.iter(stderr):flatten():join("\n")
+                    log:debug("[Editor Context Tool] Error output: %s", errors)
 
-                chat:add_tool_output(self, errors)
-            end,
+                    chat:add_tool_output(self, errors)
+                end,
 
-            ---Rejection message back to the LLM
-            --- @param self table
-            --- @param tools CodeCompanion.Tools
-            --- @param cmd table
-            --- @param reject_opts table
-            --- @return nil
-            rejected = function(self, tools, cmd, reject_opts)
-                local message = "The user rejected the editor context tool"
-                reject_opts = vim.tbl_extend("force", { message = message }, reject_opts or {})
-                helpers.rejected(self, tools, cmd, reject_opts)
-            end,
-        },
-    }
+                ---Rejection message back to the LLM
+                --- @param self table
+                --- @param tools CodeCompanion.Tools
+                --- @param cmd table
+                --- @param reject_opts table
+                --- @return nil
+                rejected = function(self, tools, cmd, reject_opts)
+                    local message = "The user rejected the editor context tool"
+                    if tools.chat then
+                        tools.chat:add_tool_output(self, message)
+                    end
+                end,
+            },
+        }
+    end
 end
 
 ---Setup the extension
@@ -171,7 +173,7 @@ function Extension.setup(opts)
 
     local cc_config = require("codecompanion.config")
 
-    -- Register the editor_context tool
+    -- Register the editor_context tool (v19: callback must be a function that returns the tool table)
     cc_config.config.interactions.chat.tools["editor_context"] = {
         callback = create_tool(opts),
         description = "Get information about visible buffers, active buffer, and cursor position",
@@ -180,17 +182,21 @@ function Extension.setup(opts)
         },
     }
 
-    -- Register the editor variable
-    cc_config.config.interactions.chat.variables["editor"] = {
-        callback = function(self)
-            local buffer_context = self.Chat and self.Chat.buffer_context
-            return llm.get_formatted_context(buffer_context)
-        end,
-        description = "Get information about visible buffers, active buffer, and cursor position",
-        opts = {
-            contains_code = false,
-        },
-    }
+    -- Register the editor variable (v19: `variables` renamed to `editor_context`)
+    local editor_context_config = cc_config.config.interactions.chat.editor_context
+        or cc_config.config.interactions.chat.variables  -- fallback for older CC versions
+    if editor_context_config then
+        editor_context_config["editor"] = {
+            callback = function(self)
+                local buffer_context = self.Chat and self.Chat.buffer_context
+                return llm.get_formatted_context(buffer_context)
+            end,
+            description = "Get information about visible buffers, active buffer, and cursor position",
+            opts = {
+                contains_code = false,
+            },
+        }
+    end
 end
 
 -- Exported functions accessible via codecompanion.extensions.editor_context
