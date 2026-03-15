@@ -34,7 +34,7 @@ This library is used by our main Neovim configuration at `~/Documents/dotfiles/n
     │   └── adaptive_pickers.lua        # Enhanced pickers with dynamic path shortening
     └── codecompanion/_extensions/      # CodeCompanion extensions
         └── editor_context/
-            └── init.lua                # Registers #editor variable and editor_context tool
+            └── init.lua                # Registers #neovim_context variable and neovim_context tool
 ```
 
 ## Key Conventions
@@ -129,14 +129,14 @@ The `adaptive_pickers` extension wraps built-in pickers to:
 
 The `editor_context` extension (`lua/codecompanion/_extensions/editor_context/init.lua`) provides:
 
-### Tool: `editor_context`
+### Tool: `neovim_context`
 A tool the LLM can call to get information about the current editor state:
 - Active buffer (file path, filetype, line count, modified status)
 - Cursor position (line, column, current line content)
 - All visible buffers across tabs and windows
 - Visible line ranges for each window
 
-### Variable: `#editor`
+### Variable: `#neovim_context`
 A variable users can type in chat to include editor context in their message.
 
 ### Usage in Neovim Config

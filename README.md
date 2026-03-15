@@ -242,8 +242,8 @@ nvu.nvim includes a CodeCompanion extension that provides the LLM with context a
 
 ### Features
 
-- **`editor_context` tool** - A tool the LLM can call to get information about visible buffers, cursor position, and active window
-- **`#editor` variable** - A variable users can type in chat to include editor context in their message
+- **`neovim_context` tool** - A tool the LLM can call to get information about visible buffers, cursor position, and active window
+- **`#neovim_context` variable** - A variable users can type in chat to include editor context in their message
 
 ### What It Provides
 
@@ -272,19 +272,19 @@ require('codecompanion').setup{
 
 ### Usage
 
-#### Using the `#editor` Variable
+#### Using the `#neovim_context` Variable
 
-Type `#editor` in your chat message to include the current editor context:
+Type `#neovim_context` in your chat message to include the current editor context:
 
 ```
-#editor Explain what this file does
+#neovim_context Explain what this file does
 ```
 
 The variable expands to a formatted Markdown block containing all visible buffers, cursor position, and active buffer information.
 
-#### Using the `editor_context` Tool
+#### Using the `neovim_context` Tool
 
-The LLM can call the `editor_context` tool automatically when it needs to understand your current editing context. The tool is designed to be lightweight and is called when:
+The LLM can call the `neovim_context` tool automatically when it needs to understand your current editing context. The tool is designed to be lightweight and is called when:
 
 - You ask about "this file", "current buffer", or "what I'm looking at"
 - The LLM needs cursor position for targeted edits
