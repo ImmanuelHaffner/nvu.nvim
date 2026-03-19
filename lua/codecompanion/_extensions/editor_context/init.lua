@@ -182,8 +182,10 @@ function Extension.setup(opts)
         },
     }
 
-    -- Register the #neovim_context editor context item (v19: `variables` renamed to `editor_context`)
-    local editor_context_config = cc_config.config.interactions.chat.editor_context
+    -- Register the #neovim_context editor context item
+    -- v19.4.0+ moved editor_context from chat to shared; fall back for older versions
+    local editor_context_config = (cc_config.config.interactions.shared and cc_config.config.interactions.shared.editor_context)
+        or cc_config.config.interactions.chat.editor_context
         or cc_config.config.interactions.chat.variables  -- fallback for older CC versions
     if editor_context_config then
         editor_context_config["neovim_context"] = {
