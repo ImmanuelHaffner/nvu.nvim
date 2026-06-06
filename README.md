@@ -186,17 +186,38 @@ local lazy_utils = require'nvu.lazy'
 local data = lazy_utils.pending_updates()
 
 -- Fetch mode: run `git fetch --quiet` on every installed plugin first.
--- Slow (~30-60s for a typical config, blocks the editor). Reliable.
+-- Uses a bounded-concurrency sliding-window scheduler (default 8 parallel
+-- fetches). Typically ~20-30s for a ~80-plugin config (vs. ~3 minutes serial).
+-- Per-fetch timeout is configurable (default 30s); failures are recorded in
+-- the returned `fetch_errors` field rather than throwing.
 local data = lazy_utils.pending_updates({ fetch = true })
 
--- Override the freshness threshold (default 1 hour).
-local data = lazy_utils.pending_updates({ freshness_threshold_seconds = 600 })
+-- Tune concurrency, per-fetch timeout, freshness threshold.
+local data = lazy_utils.pending_updates({
+  fetch = true,
+  jobs = 16,
+  fetch_timeout_ms = 60000,
+  freshness_threshold_seconds = 600,
+})
 
--- Format the structured data as a human/LLM-readable Markdown overview.
+-- Format the structured data as a human/LLM-readable Markdown overview,
+-- grouped by direction (forward / backward / diverged).
 print(lazy_utils.format_pending_updates(data))
 ```
 
-Returns:
+#### Direction classification
+
+For each plugin where `HEAD ≠ target`, the function classifies the relationship using `git merge-base --is-ancestor`:
+
+| Direction | Meaning | `:Lazy update` behaviour |
+|---|---|---|
+| `forward` | `from` is ancestor of `to`. Upstream has commits we don't. | Fast-forward. The routine "update available" case. |
+| `backward` | `to` is ancestor of `from`. Local HEAD is ahead of the target. | Would **rewind** local HEAD — typically unpushed local work or a `:Lazy restore` to an old pin. |
+| `diverged` | Neither is ancestor of the other. Both have unique commits. | Would force-checkout the target, losing local commits. Needs human resolution. |
+
+The returned data includes all three categories — the agent decides which are actionable. Sort order is `forward → backward → diverged`, descending by commit count within each direction.
+
+#### Returns
 
 ```lua
 {
@@ -204,25 +225,28 @@ Returns:
     {
       name        = 'nvim-metals',
       dir         = '/home/.../lazy/nvim-metals',
-      from        = '7ed47cd',                -- short SHA
-      from_full   = '7ed47cdabc...',
-      to          = '4cc98f0',
-      to_full     = '4cc98f0...',
+      from        = '7ed47cd',                       -- short SHA (current HEAD)
+      from_full   = '7ed47cdabc...',                 -- full SHA
+      to          = '4cc98f0',                       -- short SHA (target)
+      to_full     = '4cc98f0...',                    -- full SHA
       branch      = 'main',
-      count       = 7,
-      log         = {                          -- per-commit, newest first
+      count       = 7,                               -- commits in the relevant direction
+      direction   = 'forward',                       -- 'forward' | 'backward' | 'diverged'
+      log         = {                                -- per-commit, newest first
         { sha = '4cc98f0', subject = 'Adding metals root dir to MetalsInfo' },
         ...
       },
     },
     ...
   },
-  fetch_age_seconds = 770 * 3600,              -- max FETCH_HEAD age, nil if no plugin has been fetched
-  stale             = true,                    -- fetch_age_seconds > threshold
+  fetch_age_seconds = 770 * 3600,                    -- max FETCH_HEAD age, nil if no plugin has been fetched
+  stale             = true,                          -- fetch_age_seconds > threshold
+  fetch_errors      = {                              -- per-plugin failure map; empty if fetch wasn't run or all succeeded
+    -- ['plugin-name'] = 'timeout after 30000ms',
+    -- ['other-plugin'] = 'fatal: unable to access ...',
+  },
 }
 ```
-
-Updates are sorted by commit count (descending), so the highest-impact updates appear first.
 
 ### `nvu.telescope`
 
