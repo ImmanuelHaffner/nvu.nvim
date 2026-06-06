@@ -25,6 +25,7 @@ This library is used by our main Neovim configuration at `~/Documents/dotfiles/n
     │   ├── highlight.lua               # Query highlight group attributes
     │   ├── editor.lua                  # Editor context (buffers, cursor, windows)
     │   ├── llm.lua                     # LLM formatting utilities
+    │   ├── lazy.lua                    # lazy.nvim integration (programmatic :Lazy check)
     │   └── telescope/                  # Telescope integration
     │       ├── init.lua                # Re-exports telescope submodules
     │       ├── utils.lua               # Layout dimension helpers

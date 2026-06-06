@@ -13,5 +13,6 @@ M.highlight = require'nvu.highlight'
 M.telescope = require'nvu.telescope'
 M.editor = require'nvu.editor'
 M.llm = require'nvu.llm'
+M.lazy = require'nvu.lazy'
 
 return M

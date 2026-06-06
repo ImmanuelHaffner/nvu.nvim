@@ -14,6 +14,7 @@ A collection of utility functions for Neovim plugin and configuration developmen
 - **Highlight utilities** - Query highlight group attributes
 - **Telescope integration** - Enhanced entry makers, previewers, and adaptive pickers extension
 - **CodeCompanion integration** - Editor context tool and variable for LLM-assisted editing
+- **lazy.nvim integration** - Programmatic equivalent of `:Lazy check` for agent-driven plugin-upgrade workflows
 
 ## Installation
 
@@ -45,6 +46,7 @@ nvu.buffer     -- Buffer utilities
 nvu.env        -- Environment detection
 nvu.highlight  -- Highlight utilities
 nvu.telescope  -- Telescope utilities
+nvu.lazy       -- lazy.nvim integration
 ```
 
 ## API Reference
@@ -170,6 +172,57 @@ local highlight = require'nvu.highlight'
 local hl = highlight.get('Normal')
 -- Returns: { bg, fg, sp, bold, italic, underline, ... }
 ```
+
+### `nvu.lazy`
+
+Programmatic integration with lazy.nvim. Provides a structured, agent-friendly equivalent of the `:Lazy check` UI for use in upgrade workflows.
+
+```lua
+local lazy_utils = require'nvu.lazy'
+
+-- Trust mode (default): compare HEAD against origin/<branch> using whatever
+-- refs the most recent `git fetch` left behind. Fast (milliseconds), but stale
+-- if no fetch has been done recently.
+local data = lazy_utils.pending_updates()
+
+-- Fetch mode: run `git fetch --quiet` on every installed plugin first.
+-- Slow (~30-60s for a typical config, blocks the editor). Reliable.
+local data = lazy_utils.pending_updates({ fetch = true })
+
+-- Override the freshness threshold (default 1 hour).
+local data = lazy_utils.pending_updates({ freshness_threshold_seconds = 600 })
+
+-- Format the structured data as a human/LLM-readable Markdown overview.
+print(lazy_utils.format_pending_updates(data))
+```
+
+Returns:
+
+```lua
+{
+  updates = {
+    {
+      name        = 'nvim-metals',
+      dir         = '/home/.../lazy/nvim-metals',
+      from        = '7ed47cd',                -- short SHA
+      from_full   = '7ed47cdabc...',
+      to          = '4cc98f0',
+      to_full     = '4cc98f0...',
+      branch      = 'main',
+      count       = 7,
+      log         = {                          -- per-commit, newest first
+        { sha = '4cc98f0', subject = 'Adding metals root dir to MetalsInfo' },
+        ...
+      },
+    },
+    ...
+  },
+  fetch_age_seconds = 770 * 3600,              -- max FETCH_HEAD age, nil if no plugin has been fetched
+  stale             = true,                    -- fetch_age_seconds > threshold
+}
+```
+
+Updates are sorted by commit count (descending), so the highest-impact updates appear first.
 
 ### `nvu.telescope`
 
