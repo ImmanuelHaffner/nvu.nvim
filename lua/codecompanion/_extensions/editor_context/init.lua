@@ -1,9 +1,11 @@
 --- CodeCompanion Extension: Neovim Context
 --- Provides the LLM with context about visible buffers, active buffer, and cursor position.
 --- Registers both a tool (neovim_context) and an editor context item (#neovim_context).
-
-local editor = require'nvu.editor'
-local llm = require'nvu.llm'
+---
+--- All references to `nvu.editor` / `nvu.llm` are resolved at call-time via `require`
+--- (not at module load time) so that reloading those modules during development
+--- (e.g. `package.loaded['nvu.llm'] = nil`) is picked up on the next invocation
+--- without restarting Neovim or re-running `Extension.setup`.
 
 local fmt = string.format
 
@@ -57,11 +59,21 @@ local TOOL_SCHEMA = {
     },
 }
 
----Execute the editor context tool
---- @param buffer_context? table The buffer context from CodeCompanion chat
+---Execute the editor context tool.
+---
+---Always reports the user's *current* focus by calling `get_context()` with no
+---`opts` — this matters because the tool can be invoked autonomously by the LLM
+---between user turns, and the user may have moved focus since the chat opened.
+---Passing the chat's stored `buffer_context` (set when the chat was first opened)
+---would return stale information; we deliberately don't do that here.
 --- @return { status: "success"|"error", data: string }
-local function execute_tool(buffer_context)
-    local ok, context = pcall(editor.get_context, buffer_context)
+local function execute_tool()
+    -- Resolve modules at call-time so live edits to nvu.editor / nvu.llm
+    -- are reflected without restarting Neovim. Cached require is ~51 ns.
+    local editor = require'nvu.editor'
+    local llm = require'nvu.llm'
+
+    local ok, context = pcall(editor.get_context)
     if not ok then
         return {
             status = "error",
@@ -94,15 +106,14 @@ local function create_tool(opts)
             name = "neovim_context",
             system_prompt = TOOL_SYSTEM_PROMPT,
             cmds = {
-                ---Execute the editor context command (v19 signature)
+                ---Execute the editor context command (v19 signature).
+                ---Intentionally ignores `self.chat.buffer_context`; see `execute_tool`.
                 --- @param self table Tool instance with access to chat context
                 --- @param action table The arguments from the LLM's tool call
                 --- @param opts_arg { input?: any, output_cb?: fun(msg: table) } Options with input and async callback
                 --- @return { status: "success"|"error", data: string }
                 function(self, action, opts_arg)
-                    -- Get buffer_context from chat (the window/buffer that was active when chat opened)
-                    local buffer_context = self.chat and self.chat.buffer_context
-                    return execute_tool(buffer_context)
+                    return execute_tool()
                 end,
             },
             schema = TOOL_SCHEMA,
@@ -190,8 +201,14 @@ function Extension.setup(opts)
     if editor_context_config then
         editor_context_config["neovim_context"] = {
             callback = function(self)
-                local buffer_context = self.Chat and self.Chat.buffer_context
-                return llm.get_formatted_context(buffer_context)
+                -- Resolve nvu.llm at call-time for live reload friendliness.
+                -- Intentionally do NOT pass `self.Chat.buffer_context`: that's a snapshot
+                -- of where the chat was opened from, not where the user is *now*. The user
+                -- types `#neovim_context` from inside the chat, and may have moved focus
+                -- around since the chat opened. Reporting current focus is the correct
+                -- semantics — same reasoning as in the tool's `execute_tool`.
+                local llm = require'nvu.llm'
+                return llm.get_formatted_context()
             end,
             description = "Get information about visible buffers, active buffer, and cursor position",
             opts = {
@@ -201,22 +218,24 @@ function Extension.setup(opts)
     end
 end
 
--- Exported functions accessible via codecompanion.extensions.editor_context
+-- Exported functions accessible via codecompanion.extensions.editor_context.
+-- Each export is a thin wrapper that resolves the underlying module at call-time
+-- so live reloads of nvu.editor / nvu.llm are picked up automatically.
 Extension.exports = {
     ---Get the raw editor context data
-    --- @param opts? { winnr?: number, bufnr?: number }
-    --- @return table
-    get_context = editor.get_context,
+    ---@param opts? { winnr?: number, bufnr?: number }
+    ---@return table
+    get_context = function(opts) return require'nvu.editor'.get_context(opts) end,
 
     ---Get formatted editor context string
-    --- @param opts? { winnr?: number, bufnr?: number }
-    --- @return string
-    get_formatted_context = llm.get_formatted_context,
+    ---@param opts? { winnr?: number, bufnr?: number }
+    ---@return string
+    get_formatted_context = function(opts) return require'nvu.llm'.get_formatted_context(opts) end,
 
     ---Get buffer info
-    --- @param bufnr number
-    --- @return table|nil
-    get_buffer_info = editor.get_buffer_info,
+    ---@param bufnr number
+    ---@return table|nil
+    get_buffer_info = function(bufnr) return require'nvu.editor'.get_buffer_info(bufnr) end,
 }
 
 return Extension

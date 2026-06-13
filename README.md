@@ -319,7 +319,7 @@ nvu.nvim includes a CodeCompanion extension that provides the LLM with context a
 
 ### Features
 
-- **`neovim_context` tool** - A tool the LLM can call to get information about visible buffers, cursor position, and active window
+- **`neovim_context` tool** - A tool the LLM can call to get information about visible buffers, cursor position, active window, and the working directory (including per-tab `:tcd` and per-window `:lcd` overrides)
 - **`#neovim_context` variable** - A variable users can type in chat to include editor context in their message
 
 ### What It Provides
@@ -377,11 +377,13 @@ local ext = require('codecompanion').extensions.editor_context
 
 -- Get raw editor context data
 local context = ext.get_context()
--- Returns: { active = {...}, cursor = {...}, tabs = {...} }
+-- Returns: { cwd, active_buf, active_win, active_tab, cursor = {...}, tabs = {...} }
+-- Each tab carries { handle, number, is_active, local_cwd?, windows = {...} }
+-- Each window carries { winnr, is_active, buffer = {...}, topline, botline, local_cwd? }
 
 -- Get formatted Markdown string
 local formatted = ext.get_formatted_context()
--- Returns: "# Editor Context\n\n## Active Buffer\n..."
+-- Returns: "# Editor Context\n\n**CWD**: `...`\n\n## Active Position\n..."
 
 -- Get info about a specific buffer
 local info = ext.get_buffer_info(bufnr)
