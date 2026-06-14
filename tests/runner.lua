@@ -102,7 +102,19 @@ local function fail(msg, ctx)
     error(msg .. (ctx and ('\n  ' .. ctx) or ''), 3)
 end
 
-local nvu_assert = {}
+--- Lua's builtin `assert`, captured before we shadow `_G.assert` with our
+--- busted-style table. Spec files (and the modules under test) commonly use
+--- `assert(cond, msg)` for argument validation, so the global must remain
+--- *callable* like the stdlib version while also exposing `.is_*` / `.are.*`
+--- helpers as fields. We achieve that by giving the table a `__call`
+--- metamethod that delegates to the real stdlib `assert`.
+local lua_assert = assert
+
+local nvu_assert = setmetatable({}, {
+    __call = function(_, v, msg, ...)
+        return lua_assert(v, msg, ...)
+    end,
+})
 
 function nvu_assert.is_true(v, ctx)
     if v ~= true then
