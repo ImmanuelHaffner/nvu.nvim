@@ -35,6 +35,7 @@ local M = {}
 --- @field op_index? integer Optional: 0-based index into `ops[]` if applicable.
 
 M.ERROR_REASONS = {
+    -- Schema-validation reasons (raised by schema.lua itself).
     missing_field             = 'missing_field',
     wrong_type                = 'wrong_type',
     out_of_range              = 'out_of_range',
@@ -47,6 +48,12 @@ M.ERROR_REASONS = {
     bad_modifier_target       = 'bad_modifier_target',          -- insert with a non-positional anchor
     unsupported_op_kind       = 'unsupported_op_kind',          -- declared in schema but not yet implemented
     unsupported_anchor_kind   = 'unsupported_anchor_kind',      -- ditto for anchor kinds
+
+    -- Planner reasons (raised by planner.lua and anchor resolvers).
+    anchor_ambiguous          = 'anchor_ambiguous',             -- unique_text matched >1 site with no `occurrence`
+    anchor_not_found          = 'anchor_not_found',             -- anchor resolved to zero matches
+    range_conflict            = 'range_conflict',               -- two ops claim overlapping ranges in one file
+    io_error                  = 'io_error',                     -- could not read the file
 }
 
 M.WARNING_REASONS = {
