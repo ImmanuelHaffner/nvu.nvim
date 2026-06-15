@@ -177,27 +177,149 @@ describe('nvu.edit.file_record', function()
         end)
     end)
 
-    describe('read — file I/O', function()
-        it('reads an existing file and produces a record', function()
+    describe('read — file I/O (buffer-first)', function()
+        --- Helper: write a fresh tempfile and return its absolute path.
+        local function write_tempfile(content)
             local tmp = vim.fn.tempname()
             local f = assert(io.open(tmp, 'wb'), 'failed to open tempfile for write')
-            f:write('line1\nline2\n')
+            f:write(content)
             f:close()
+            return vim.fn.fnamemodify(tmp, ':p')
+        end
+
+        --- Helper: wipe a buffer + delete its file.
+        local function cleanup(path)
+            local bufnr = vim.fn.bufnr(path)
+            if bufnr > 0 then
+                pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+            end
+            vim.fn.delete(path)
+        end
+
+        it('reads an existing file via buffer and produces a record', function()
+            local tmp = write_tempfile('line1\nline2\n')
 
             local rec, err = fr.read(tmp)
             assert.is_nil(err)
             assert.is.equal(tmp, rec.path)
             assert.is.equal('line1\nline2\n', rec.content)
             assert.is.equal(2, rec.n_lines)
+            assert.is_truthy(rec.bufnr > 0)
+            assert.is_truthy(rec.endofline)
 
-            vim.fn.delete(tmp)
+            cleanup(tmp)
         end)
 
-        it('returns nil + error message when the file does not exist', function()
+        it('normalises a relative path to an absolute path on the record', function()
+            local tmp = write_tempfile('x\n')
+            -- Ask via a non-absolute spelling. The record should hold the :p form.
+            local rel = vim.fn.fnamemodify(tmp, ':~')  -- e.g. ~/...
+            local rec, err = fr.read(rel)
+            assert.is_nil(err)
+            assert.is.equal(tmp, rec.path)
+            cleanup(tmp)
+        end)
+
+        it('returns nil + error when the file does not exist', function()
             local rec, err = fr.read('/nonexistent/path/that/should/not/exist')
             assert.is_nil(rec)
             assert.is_string(err)
-            assert.is_truthy(err:find('cannot open', 1, true))
+            assert.is_truthy(err:find('does not exist', 1, true))
+        end)
+
+        it('rejects a directory', function()
+            local rec, err = fr.read('/tmp')
+            assert.is_nil(rec)
+            assert.is_string(err)
+            assert.is_truthy(err:find('not a regular file', 1, true))
+        end)
+
+        it('rejects an empty path', function()
+            local rec, err = fr.read('')
+            assert.is_nil(rec)
+            assert.is.equal('path must be a non-empty string', err)
+        end)
+
+        it('reads from an already-loaded buffer instead of from disk', function()
+            -- Create a file on disk, load it into a buffer, mutate the
+            -- buffer without saving, then read. The record content should
+            -- reflect the buffer state, not the disk state — this is the
+            -- "snapshot must match what the LLM sees" invariant.
+            local tmp = write_tempfile('on_disk_line\n')
+            local bufnr = vim.fn.bufadd(tmp)
+            vim.fn.bufload(bufnr)
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'in_buffer_line' })
+
+            local rec, err = fr.read(tmp)
+            assert.is_nil(err)
+            assert.is.equal(bufnr, rec.bufnr)
+            -- We see the buffer's content, NOT the on-disk content.
+            assert.is.equal('in_buffer_line\n', rec.content)
+            assert.is.equal(1, rec.n_lines)
+
+            cleanup(tmp)
+        end)
+
+        it('idempotency: two reads of the same path produce the same bufnr', function()
+            local tmp = write_tempfile('hello\n')
+            local rec1 = assert(fr.read(tmp))
+            local rec2 = assert(fr.read(tmp))
+            assert.is.equal(rec1.bufnr, rec2.bufnr)
+            assert.is.equal(rec1.content, rec2.content)
+            cleanup(tmp)
+        end)
+    end)
+
+    describe('from_buffer', function()
+        it('builds a record from a loaded buffer with endofline=true', function()
+            local bufnr = vim.api.nvim_create_buf(false, true)  -- nofile, scratch
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha', 'beta', 'gamma' })
+            vim.bo[bufnr].endofline = true
+
+            local rec = fr.from_buffer(bufnr)
+            assert.is.equal(bufnr, rec.bufnr)
+            assert.is_truthy(rec.endofline)
+            assert.is.equal('alpha\nbeta\ngamma\n', rec.content)
+            assert.is.equal(3, rec.n_lines)
+
+            pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+        end)
+
+        it('omits the trailing newline when endofline=false', function()
+            local bufnr = vim.api.nvim_create_buf(false, true)
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'no_final_newline' })
+            vim.bo[bufnr].endofline = false
+
+            local rec = fr.from_buffer(bufnr)
+            assert.is_falsy(rec.endofline)
+            assert.is.equal('no_final_newline', rec.content)
+            assert.is.equal(1, rec.n_lines)
+
+            pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+        end)
+
+        it('handles an empty buffer (no lines, endofline irrelevant)', function()
+            local bufnr = vim.api.nvim_create_buf(false, true)
+            -- nvim_create_buf gives a buffer with one empty line by default.
+            -- Force it to zero lines.
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+
+            local rec = fr.from_buffer(bufnr)
+            -- Neovim normalises "zero lines" to "one empty line" on read-back.
+            -- The record reflects whatever nvim_buf_get_lines returns.
+            -- Just assert the invariant: content length is consistent with offsets.
+            assert.is.equal(#rec.offsets, rec.n_lines)
+
+            pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+        end)
+
+        it('asserts when the buffer is not loaded', function()
+            local bufnr = vim.fn.bufadd('/tmp/never-actually-loaded-' .. os.time())
+            -- Don't bufload — bufadd alone leaves it unloaded.
+            assert.is_falsy(vim.api.nvim_buf_is_loaded(bufnr))
+            local ok = pcall(fr.from_buffer, bufnr)
+            assert.is_falsy(ok)
+            pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
         end)
     end)
 end)

@@ -4,14 +4,45 @@
 --- A FileRecord is the input shape every anchor resolver expects:
 ---
 ---   {
----     path    = "lua/foo.lua",
----     content = "<raw bytes as a single Lua string>",
----     offsets = { 1, 42, 117, ... },  -- 1-based; offsets[i] = first byte of line i
+---     path      = "/abs/path/lua/foo.lua",  -- absolute, normalised via `:p`
+---     content   = "<raw bytes as a single Lua string>",
+---     offsets   = { 1, 42, 117, ... },  -- 1-based; offsets[i] = first byte of line i
+---     n_lines   = N,
+---     bufnr     = 42,                  -- buffer the content was sourced from
+---     endofline = true,                -- `:set endofline` for that buffer (affects EOL normalisation)
 ---   }
 ---
 --- The string is canonical (multi-line `unique_text` matches need cross-line
 --- scanning); offsets give O(1) line→byte slicing and O(log n) byte→line
 --- translation.
+---
+--- ## Buffer-first reads
+---
+--- `M.read(path)` always sources content from a Neovim buffer. If a buffer
+--- exists for the path (regardless of whether it's modified), that buffer is
+--- the source. Otherwise the path is loaded into a fresh buffer via
+--- `bufadd` + `bufload`. Reasons:
+---
+---   * Modified buffers carry unsaved changes the user is staring at. Reading
+---     disk while ignoring them would lie to the LLM about the file's current
+---     state. The snapshot hash must be over what the LLM sees.
+---   * mcphub's `EditUI` (which our applier reuses) operates on buffers. Using
+---     buffers throughout means one consistent source of truth across read,
+---     anchor resolution, and apply.
+---   * `nvim_buf_get_lines` returns lines already split — no `string.gmatch`
+---     pass, no encoding ambiguity. Fast for already-loaded buffers (memory)
+---     and correct (it sees whatever Neovim has decoded, including BOM strip
+---     and EOL conversion).
+---
+--- ## EOL normalisation
+---
+--- `nvim_buf_get_lines` strips line terminators. We rebuild `content` as
+--- `table.concat(lines, '\n')` and append a final `\n` iff
+--- `vim.bo[bufnr].endofline` is set (the default for files ending in `\n` on
+--- disk). The `endofline` flag is captured in the record so the planner's
+--- re-hash at apply time uses the same normalisation. Other newline
+--- conventions (`\r\n`, `\r`) are out of scope for MVP — Neovim's
+--- `'fileformat'` option already normalises these on load.
 ---
 --- @module "nvu.edit.file_record"
 
@@ -19,10 +50,12 @@ local M = {}
 
 --- A canonical file record.
 --- @class nvu.edit.FileRecord
---- @field path    string                 Absolute or relative path the planner was asked to resolve.
---- @field content string                 Raw bytes of the file as a single Lua string.
---- @field offsets integer[]              1-based; offsets[i] = first byte of line i. Always has at least { 1 }.
---- @field n_lines integer                Number of lines in `content`. Derived from `#offsets`.
+--- @field path      string                 Absolute path (via `fnamemodify(':p')`).
+--- @field content   string                 Raw bytes of the file as a single Lua string (EOL-normalised, see module doc).
+--- @field offsets   integer[]              1-based; offsets[i] = first byte of line i. Always has at least { 1 }.
+--- @field n_lines   integer                Number of lines in `content`. Derived from `#offsets`.
+--- @field bufnr     integer                Buffer number the content was sourced from.
+--- @field endofline boolean                Captured `vim.bo[bufnr].endofline` at read time.
 
 --- Build the line-start offsets array for a string.
 ---
@@ -64,31 +97,103 @@ function M.build_offsets(content)
     return offsets
 end
 
---- Read a file and build a canonical record.
+--- Reconstruct file content from a buffer's lines, applying EOL normalisation.
 ---
---- Uses `io.open` for the raw byte read. We deliberately avoid
---- `vim.fn.readfile`, which allocates one interned Lua string per line and
---- benchmarks ~70× slower than the raw read for large files.
+--- `nvim_buf_get_lines` returns lines without their `\n` terminators. We
+--- join with `\n` and append a final `\n` iff `endofline` is set (the
+--- default — meaning the file ends with a newline on disk). The same
+--- routine runs at read time and at planner-rehash time, so the hash is
+--- stable across the read → apply window for unchanged buffers.
+---
+--- @param bufnr integer
+--- @return string content
+--- @return boolean endofline
+local function buffer_content(bufnr)
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local endofline = vim.bo[bufnr].endofline
+    local content = table.concat(lines, '\n')
+    if endofline and #lines > 0 then content = content .. '\n' end
+    return content, endofline
+end
+
+--- Build a record from an already-loaded buffer.
+---
+--- The caller owns the buffer's lifetime; this function only reads.
+---
+--- @param bufnr integer  Must satisfy `nvim_buf_is_loaded`.
+--- @return nvu.edit.FileRecord
+function M.from_buffer(bufnr)
+    assert(vim.api.nvim_buf_is_loaded(bufnr),
+        string.format('from_buffer: bufnr %d is not loaded', bufnr))
+    local content, endofline = buffer_content(bufnr)
+    local offsets = M.build_offsets(content)
+    return {
+        path      = vim.api.nvim_buf_get_name(bufnr),
+        content   = content,
+        offsets   = offsets,
+        n_lines   = #offsets,
+        bufnr     = bufnr,
+        endofline = endofline,
+    }
+end
+
+--- Load `path` into a buffer (or find an existing one) and build a canonical
+--- record.
+---
+--- Buffer-first by design: the snapshot the LLM sees must match what the
+--- planner re-hashes, and `EditUI` (our applier) operates on buffers, so we
+--- standardise on the buffer as the source of truth. See module doc.
+---
+--- Path is normalised via `:p` so we match the buffer name Neovim itself
+--- assigns. Fresh buffers are `bufload`ed (which reads from disk through
+--- Neovim's normal load pipeline — encoding, BOM, `'fileformat'`). Pre-checks
+--- via `vim.uv.fs_stat` distinguish "file does not exist" from "file is
+--- empty" so we don't pollute the buffer list with bogus names.
 ---
 --- @param path string
 --- @return nvu.edit.FileRecord|nil record  On success.
 --- @return string|nil err                  On failure, the I/O error message.
 function M.read(path)
-    local f, ferr = io.open(path, 'rb')
-    if not f then
-        return nil, string.format('cannot open %q: %s', path, ferr or 'unknown error')
+    if type(path) ~= 'string' or path == '' then
+        return nil, 'path must be a non-empty string'
     end
-    local content, rerr = f:read('*a')
-    f:close()
-    if not content then
-        return nil, string.format('cannot read %q: %s', path, rerr or 'unknown error')
+    local abs_path = vim.fn.fnamemodify(path, ':p')
+
+    -- Existence + type check before we touch the buffer list. `bufadd` on a
+    -- nonexistent path silently succeeds — we don't want that.
+    local stat = vim.uv.fs_stat(abs_path)
+    if not stat then
+        return nil, string.format('cannot open %q: file does not exist', abs_path)
     end
-    return M.from_content(path, content), nil
+    if stat.type ~= 'file' and stat.type ~= 'link' then
+        return nil, string.format('cannot open %q: not a regular file (type=%s)', abs_path, stat.type)
+    end
+
+    -- bufadd is idempotent: returns the existing bufnr if a buffer with that
+    -- name is already in the list, otherwise creates a fresh unloaded one.
+    local bufnr = vim.fn.bufadd(abs_path)
+    if bufnr == 0 then
+        return nil, string.format('cannot open %q: bufadd failed', abs_path)
+    end
+    if not vim.api.nvim_buf_is_loaded(bufnr) then
+        -- bufload reads the file through Neovim's normal load pipeline:
+        -- encoding detection, BOM handling, 'fileformat' normalisation,
+        -- FileType autocmds. Errors here typically surface as messages
+        -- rather than exceptions; we trust the resulting buffer state.
+        local ok, err = pcall(vim.fn.bufload, bufnr)
+        if not ok then
+            return nil, string.format('cannot load %q: %s', abs_path, tostring(err))
+        end
+    end
+
+    return M.from_buffer(bufnr), nil
 end
 
 --- Build a record from a path and an already-loaded content string.
---- Useful for tests and for buffer-sourced content where I/O has happened
---- elsewhere.
+---
+--- This bypasses the buffer-first read pipeline. Intended for tests and for
+--- callers that already have content from another source. The resulting
+--- record has `bufnr = -1` and `endofline = true` (the conservative default).
 ---
 --- @param path string
 --- @param content string
@@ -96,10 +201,12 @@ end
 function M.from_content(path, content)
     local offsets = M.build_offsets(content)
     return {
-        path    = path,
-        content = content,
-        offsets = offsets,
-        n_lines = #offsets,
+        path      = path,
+        content   = content,
+        offsets   = offsets,
+        n_lines   = #offsets,
+        bufnr     = -1,
+        endofline = true,
     }
 end
 
