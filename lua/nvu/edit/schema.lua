@@ -87,7 +87,7 @@ M.ERROR_REASONS = {
     anchor_not_found          = 'anchor_not_found',             -- anchor resolved to zero matches
     range_conflict            = 'range_conflict',               -- two ops claim overlapping ranges in one file
     io_error                  = 'io_error',                     -- could not read the file
-    stale_snapshot            = 'stale_snapshot',               -- op's `snapshot` does not match current file hash
+    stale_fingerprint         = 'stale_fingerprint',            -- op's `baseline_fingerprint` does not match current file fingerprint
 }
 
 M.WARNING_REASONS = {
@@ -641,7 +641,7 @@ local function validate_op(op, op_index, contents, used_labels, errors, warnings
             kind = 'delete_range',
             path = op.path,
             anchor = anchor,
-            based_on = op.based_on,
+            baseline_fingerprint = op.baseline_fingerprint,
         }
     end
 
@@ -677,7 +677,7 @@ local function validate_op(op, op_index, contents, used_labels, errors, warnings
         content = content,
         content_ref = content_ref,
         indent = indent,
-        based_on = op.based_on,
+        baseline_fingerprint = op.baseline_fingerprint,
     }
 end
 

@@ -25,7 +25,7 @@
 ---
 ---   * Modified buffers carry unsaved changes the user is staring at. Reading
 ---     disk while ignoring them would lie to the LLM about the file's current
----     state. The snapshot hash must be over what the LLM sees.
+---     state. The fingerprint must be computed over what the LLM sees.
 ---   * mcphub's `EditUI` (which our applier reuses) operates on buffers. Using
 ---     buffers throughout means one consistent source of truth across read,
 ---     anchor resolution, and apply.
@@ -140,7 +140,7 @@ end
 --- Load `path` into a buffer (or find an existing one) and build a canonical
 --- record.
 ---
---- Buffer-first by design: the snapshot the LLM sees must match what the
+--- Buffer-first by design: the fingerprint the LLM sees must match what the
 --- planner re-hashes, and `EditUI` (our applier) operates on buffers, so we
 --- standardise on the buffer as the source of truth. See module doc.
 ---

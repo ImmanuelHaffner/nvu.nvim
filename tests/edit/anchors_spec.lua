@@ -103,9 +103,9 @@ describe('nvu.edit.anchors.line_range', function()
             assert.are.same(anchor, fail.anchor)
         end)
 
-        it('hint points at neovim__read_with_snapshot for re-reading', function()
+        it('hint points at neovim__read_with_fingerprint for re-reading', function()
             local _, fail = line_range.resolve(lr(99, 99), rec)
-            assert.is_truthy(fail.hint:find('neovim__read_with_snapshot', 1, true))
+            assert.is_truthy(fail.hint:find('neovim__read_with_fingerprint', 1, true))
         end)
     end)
 
@@ -316,9 +316,9 @@ describe('nvu.edit.anchors.unique_text', function()
             assert.is.equal(0, fail.total_matches)
         end)
 
-        it('hint points at neovim__read_with_snapshot for re-reading', function()
+        it('hint points at neovim__read_with_fingerprint for re-reading', function()
             local _, fail = unique_text.resolve(ut('nonexistent'), rec)
-            assert.is_truthy(fail.hint:find('neovim__read_with_snapshot', 1, true))
+            assert.is_truthy(fail.hint:find('neovim__read_with_fingerprint', 1, true))
         end)
     end)
 

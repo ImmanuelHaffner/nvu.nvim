@@ -244,7 +244,7 @@ describe('nvu.edit.file_record', function()
             -- Create a file on disk, load it into a buffer, mutate the
             -- buffer without saving, then read. The record content should
             -- reflect the buffer state, not the disk state — this is the
-            -- "snapshot must match what the LLM sees" invariant.
+            -- "fingerprint must match what the LLM sees" invariant.
             local tmp = write_tempfile('on_disk_line\n')
             local bufnr = vim.fn.bufadd(tmp)
             vim.fn.bufload(bufnr)

@@ -55,13 +55,14 @@
 --- would be silent corruption. Relax later if real usage shows the rule
 --- is too restrictive.
 ---
---- ## Snapshot validation (not yet)
+--- ## Fingerprint validation (not yet)
 ---
---- The plan to validate `op.snapshot` against the live file hash lives
---- here, but is **not yet wired**: required-`snapshot` enforcement waits
---- for `neovim__read_with_snapshot` to ship. For now the planner ignores
---- the snapshot field. When that ships, this is the place to add the
---- `stale_snapshot` check, before anchor resolution.
+--- The plan to validate `op.baseline_fingerprint` against the live
+--- file's current fingerprint lives here, but is **not yet wired**:
+--- required-fingerprint enforcement waits for the schema to make the
+--- field mandatory. For now the planner ignores it. When wired, this
+--- is the place to add the `stale_fingerprint` check, between
+--- `read_files()` and `resolve_anchors()`.
 ---
 --- @module "nvu.edit.planner"
 

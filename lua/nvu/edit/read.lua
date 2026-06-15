@@ -1,33 +1,34 @@
---- nvu.edit.read — the engine behind `neovim__read_with_snapshot`.
+--- nvu.edit.read — the engine behind `neovim__read_with_fingerprint`.
 ---
---- One function — `M.read_with_snapshot(path)` — that buffer-loads a
---- file (via `FileRecord.read`, the same buffer-first pipeline the
---- planner uses), computes a snapshot token (a short content-hash; see
---- `nvu.edit.snapshot`) over its content, and returns both. The LLM
---- then carries the token verbatim on every `apply_edit` op against
---- that file; the planner re-hashes and refuses the batch on mismatch.
+--- One function — `M.read_with_fingerprint(path)` — that buffer-loads
+--- a file (via `FileRecord.read`, the same buffer-first pipeline the
+--- planner uses), computes a baseline fingerprint over its content
+--- (via `nvu.edit.fingerprint`), and returns both. The LLM then
+--- carries the fingerprint verbatim on every `apply_edit` op against
+--- that file (in the op's `baseline_fingerprint` field); the planner
+--- re-computes and refuses the batch on mismatch.
 ---
 --- ## Why this exists
 ---
---- Without snapshots, an LLM that read a file at t0 and called
---- `apply_edit` at t2 against anchors planned against t0's content has
---- no way to detect that the file mutated at t1. Anchors may resolve
---- to the wrong location silently. With required snapshots, the
---- planner detects the drift and aborts with `stale_snapshot`.
+--- Without fingerprints, an LLM that read a file at t0 and called
+--- `apply_edit` at t2 against anchors planned against t0's content
+--- has no way to detect that the file mutated at t1. Anchors may
+--- resolve to the wrong location silently. With required fingerprints,
+--- the planner detects the drift and aborts with `stale_fingerprint`.
 ---
 --- This is the **only** read path the LLM has — the legacy
 --- `neovim__read_file` is removed from the LLM-facing surface (by
 --- user-side mcphub config) so every edit is anchored against a known
---- snapshot. There is no bypass.
+--- baseline. There is no bypass.
 ---
 --- ## What it returns
 ---
 --- Success:
 ---   { status = 'ok',
----     path     = '<absolute path>',
----     content  = '<raw bytes>',
----     snapshot = 'a3f9d2c',
----     n_lines  = N }
+---     path                 = '<absolute path>',
+---     content              = '<raw bytes>',
+---     baseline_fingerprint = 'a3f9d2c',
+---     n_lines              = N }
 ---
 --- Failure:
 ---   { status   = 'failed',
@@ -40,7 +41,7 @@
 --- @module "nvu.edit.read"
 
 local file_record = require'nvu.edit.file_record'
-local snapshot    = require'nvu.edit.snapshot'
+local fingerprint = require'nvu.edit.fingerprint'
 local schema      = require'nvu.edit.schema'
 
 local M = {}
@@ -64,19 +65,19 @@ local function io_failure(raw_path, message)
     }
 end
 
---- Read a file and return its content plus a snapshot token.
+--- Read a file and return its content plus a baseline fingerprint.
 ---
 --- Reads via `FileRecord.read`, which is buffer-first: if the path is
 --- open in a Neovim buffer (loaded), that buffer's content is the
 --- source of truth (including unsaved changes); otherwise the file is
 --- loaded into a fresh buffer. EOL normalisation is captured on the
---- record. The snapshot is computed over the same byte sequence the
---- planner will re-hash at apply time, so comparison is meaningful as
---- long as the buffer hasn't changed.
+--- record. The fingerprint is computed over the same byte sequence
+--- the planner will re-compute at apply time, so comparison is
+--- meaningful as long as the buffer hasn't changed.
 ---
 --- @param path string  The file path. Will be absolutised via `:p`.
 --- @return table response  Always a complete response, success or failure.
-function M.read_with_snapshot(path)
+function M.read_with_fingerprint(path)
     -- Input validation. Path-shape errors return as `failed[]` entries
     -- matching apply_edit's error format.
     if type(path) ~= 'string' then
@@ -110,11 +111,11 @@ function M.read_with_snapshot(path)
     end
 
     return {
-        status   = 'ok',
-        path     = rec.path,           -- absolutised by FileRecord
-        content  = rec.content,
-        snapshot = snapshot.compute(rec.content),
-        n_lines  = rec.n_lines,
+        status               = 'ok',
+        path                 = rec.path,            -- absolutised by FileRecord
+        content              = rec.content,
+        baseline_fingerprint = fingerprint.compute(rec.content),
+        n_lines              = rec.n_lines,
     }
 end
 

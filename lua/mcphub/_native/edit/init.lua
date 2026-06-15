@@ -3,14 +3,15 @@
 --- Registers two tools on mcphub's existing `neovim` native server via
 --- `mcphub.add_tool("neovim", …)`:
 ---
----   * `neovim__apply_edit`         — structured batch edits
----   * `neovim__read_with_snapshot` — read + snapshot-token emission
+---   * `neovim__apply_edit`              — structured batch edits
+---   * `neovim__read_with_fingerprint`   — read + baseline-fingerprint emission
 ---
 --- These are intended to ship together. `apply_edit` requires every op
---- to carry a `snapshot` field; the only legitimate source of those
---- tokens is `read_with_snapshot`. Once both are registered, the user
---- should disable the legacy `neovim__read_file` tool from mcphub's
---- config — required snapshots make any other read path a footgun.
+--- to carry a `baseline_fingerprint` field; the only legitimate source
+--- of those fingerprints is `read_with_fingerprint`. Once both are
+--- registered, the user should disable the legacy `neovim__read_file`
+--- tool from mcphub's config — required fingerprints make any other
+--- read path a footgun.
 ---
 --- This is the *only* file in `nvu.nvim` that imports `mcphub`; the
 --- engines themselves (`nvu.edit`, `nvu.edit.read`) stay pure Lua and
@@ -25,7 +26,7 @@ local ok, mcphub = pcall(require, 'mcphub')
 if not ok then
     vim.notify(
         'mcphub._native.edit: mcphub.nvim is not available; '
-        .. 'neovim__apply_edit and neovim__read_with_snapshot will not be registered',
+        .. 'neovim__apply_edit and neovim__read_with_fingerprint will not be registered',
         vim.log.levels.WARN
     )
     return
@@ -142,7 +143,12 @@ local anchor_schema = {
 --------------------------------------------------------------------------------
 
 local indent_schema = { type = 'string', enum = { 'match_anchor', 'preserve', 'detect' } }
-local based_on_schema = { type = 'string', minLength = 1 }
+
+-- baseline_fingerprint: a 7-character lowercase-hex content fingerprint
+-- previously issued by neovim__read_with_fingerprint. The planner re-computes
+-- and compares; mismatch → stale_fingerprint failure. See nvu.edit.fingerprint
+-- for the format.
+local baseline_fingerprint_schema = { type = 'string', pattern = '^[0-9a-f]{7}$' }
 
 -- Ops that introduce content (replace_range, insert) must supply EXACTLY ONE
 -- of `content` or `content_ref`. Expressed as `oneOf` over two required sets.
@@ -171,13 +177,13 @@ local content_xor_schema = {
 local replace_range_schema = {
     type = 'object',
     properties = {
-        kind     = { type = 'string', const = 'replace_range' },
-        path     = { type = 'string', minLength = 1 },
-        anchor   = anchor_schema,
-        content     = { type = 'string' },
-        content_ref = { type = 'string', pattern = '^[a-zA-Z_][a-zA-Z0-9_]*$' },
-        indent   = indent_schema,
-        based_on = based_on_schema,
+        kind                 = { type = 'string', const = 'replace_range' },
+        path                 = { type = 'string', minLength = 1 },
+        anchor               = anchor_schema,
+        content              = { type = 'string' },
+        content_ref          = { type = 'string', pattern = '^[a-zA-Z_][a-zA-Z0-9_]*$' },
+        indent               = indent_schema,
+        baseline_fingerprint = baseline_fingerprint_schema,
     },
     required = { 'kind', 'path', 'anchor' },
     additionalProperties = false,
@@ -187,13 +193,13 @@ local replace_range_schema = {
 local insert_schema = {
     type = 'object',
     properties = {
-        kind     = { type = 'string', const = 'insert' },
-        path     = { type = 'string', minLength = 1 },
-        anchor   = anchor_schema,
-        content     = { type = 'string' },
-        content_ref = { type = 'string', pattern = '^[a-zA-Z_][a-zA-Z0-9_]*$' },
-        indent   = indent_schema,
-        based_on = based_on_schema,
+        kind                 = { type = 'string', const = 'insert' },
+        path                 = { type = 'string', minLength = 1 },
+        anchor               = anchor_schema,
+        content              = { type = 'string' },
+        content_ref          = { type = 'string', pattern = '^[a-zA-Z_][a-zA-Z0-9_]*$' },
+        indent               = indent_schema,
+        baseline_fingerprint = baseline_fingerprint_schema,
     },
     required = { 'kind', 'path', 'anchor' },
     additionalProperties = false,
@@ -203,10 +209,10 @@ local insert_schema = {
 local delete_range_schema = {
     type = 'object',
     properties = {
-        kind     = { type = 'string', const = 'delete_range' },
-        path     = { type = 'string', minLength = 1 },
-        anchor   = anchor_schema,
-        based_on = based_on_schema,
+        kind                 = { type = 'string', const = 'delete_range' },
+        path                 = { type = 'string', minLength = 1 },
+        anchor               = anchor_schema,
+        baseline_fingerprint = baseline_fingerprint_schema,
     },
     required = { 'kind', 'path', 'anchor' },
     additionalProperties = false,
@@ -227,8 +233,8 @@ local rename_symbol_schema = {
             required = { 'line', 'character' },
             additionalProperties = false,
         },
-        new_name = { type = 'string', minLength = 1 },
-        based_on = based_on_schema,
+        new_name             = { type = 'string', minLength = 1 },
+        baseline_fingerprint = baseline_fingerprint_schema,
     },
     required = { 'kind', 'path', 'position', 'new_name' },
     additionalProperties = false,
@@ -249,8 +255,8 @@ local lsp_code_action_schema = {
             required = { 'start_line', 'end_line' },
             additionalProperties = false,
         },
-        kind_filter = { type = 'string', minLength = 1 },
-        based_on    = based_on_schema,
+        kind_filter          = { type = 'string', minLength = 1 },
+        baseline_fingerprint = baseline_fingerprint_schema,
     },
     required = { 'kind', 'path', 'range', 'kind_filter' },
     additionalProperties = false,
@@ -343,7 +349,7 @@ if not ok_add then
 end
 
 --------------------------------------------------------------------------------
--- neovim__read_with_snapshot — read a file and emit a snapshot token
+-- neovim__read_with_fingerprint — read a file and emit a baseline fingerprint
 --------------------------------------------------------------------------------
 
 local read_input_schema = {
@@ -356,46 +362,46 @@ local read_input_schema = {
 }
 
 local read_description = [[
-Read a file and receive its content together with an opaque snapshot
-token. The token is the LLM's receipt: pass it back verbatim in the
-`snapshot` field of every `apply_edit` op against this file. The
-planner re-hashes the file at apply time and refuses the batch on
-mismatch (`stale_snapshot`), closing the race where the file mutates
-between read and edit.
+Read a file and receive its content together with an opaque baseline
+fingerprint. The fingerprint is the LLM's receipt: pass it back
+verbatim in the `baseline_fingerprint` field of every `apply_edit`
+op against this file. The planner re-computes the fingerprint at
+apply time and refuses the batch on mismatch (`stale_fingerprint`),
+closing the race where the file mutates between read and edit.
 
-This is the only read path that emits a snapshot — and therefore the
-only read path you should use when planning to edit. Treat the token
-as opaque; do not parse or regenerate it.
+This is the only read path that emits a fingerprint — and therefore
+the only read path you should use when planning to edit. Treat the
+fingerprint as opaque; do not parse or regenerate it.
 
-Returns: { status: "ok", path, content, snapshot, n_lines }
+Returns: { status: "ok", path, content, baseline_fingerprint, n_lines }
 On error: { status: "failed", summary, failed: [{ reason, path, message, hint }] }
 ]]
 
 --- @type MCPTool
-local read_with_snapshot_tool = {
-    name        = 'read_with_snapshot',
+local read_with_fingerprint_tool = {
+    name        = 'read_with_fingerprint',
     description = read_description,
     inputSchema = read_input_schema,
     handler = function(req, res)
         local params = req.params or {}
-        local response = edit_read.read_with_snapshot(params.path)
+        local response = edit_read.read_with_fingerprint(params.path)
         local ok_json, encoded = pcall(vim.json.encode, response)
         if not ok_json then
-            return res:error('read_with_snapshot: failed to encode response', { response = response })
+            return res:error('read_with_fingerprint: failed to encode response', { response = response })
         end
         return res:text(encoded):send()
     end,
 }
 
-local ok_add_read, err_read = pcall(mcphub.add_tool, 'neovim', read_with_snapshot_tool)
+local ok_add_read, err_read = pcall(mcphub.add_tool, 'neovim', read_with_fingerprint_tool)
 if not ok_add_read then
     vim.notify(
-        'mcphub._native.edit: failed to register neovim__read_with_snapshot: ' .. tostring(err_read),
+        'mcphub._native.edit: failed to register neovim__read_with_fingerprint: ' .. tostring(err_read),
         vim.log.levels.ERROR
     )
 end
 
 return {
-    apply_edit         = apply_edit_tool,
-    read_with_snapshot = read_with_snapshot_tool,
+    apply_edit             = apply_edit_tool,
+    read_with_fingerprint  = read_with_fingerprint_tool,
 }

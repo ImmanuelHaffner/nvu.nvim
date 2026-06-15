@@ -88,7 +88,7 @@ function M.resolve(anchor, record)
             anchor = anchor,
             hint   = string.format(
                 'line_range { start=%d, end=%d } is out of bounds; the file has %d line(s). '
-                .. 'Re-read the file with neovim__read_with_snapshot to see current line numbers.',
+                .. 'Re-read the file with neovim__read_with_fingerprint to see current line numbers.',
                 start_line, end_line, n_lines),
             available_range = { start_line = 1, end_line = n_lines },
         }

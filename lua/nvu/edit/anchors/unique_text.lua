@@ -123,7 +123,7 @@ function M.resolve(anchor, record)
             reason = schema.ERROR_REASONS.anchor_not_found,
             anchor = anchor,
             hint   = 'the text was not found in the file. '
-                  .. 'Re-read with neovim__read_with_snapshot, or use a shorter / more characteristic substring.',
+                  .. 'Re-read with neovim__read_with_fingerprint, or use a shorter / more characteristic substring.',
             candidates = {},
             total_matches = 0,
         }
@@ -219,7 +219,7 @@ function M.resolve(anchor, record)
                 anchor = anchor,
                 hint   = string.format(
                     'occurrence.nth = %d but only %d occurrence(s) found. '
-                    .. 'Re-read with neovim__read_with_snapshot or pick nth in 1..%d.',
+                    .. 'Re-read with neovim__read_with_fingerprint or pick nth in 1..%d.',
                     nth, found, found),
                 total_matches = found,
             }
@@ -231,7 +231,7 @@ function M.resolve(anchor, record)
             anchor = anchor,
             hint   = string.format(
                 'occurrence.nth = %d but only %d occurrence(s) found. '
-                .. 'Re-read with neovim__read_with_snapshot or pick nth in 1..%d.',
+                .. 'Re-read with neovim__read_with_fingerprint or pick nth in 1..%d.',
                 nth, n_matches, n_matches),
             total_matches = n_matches,
         }
