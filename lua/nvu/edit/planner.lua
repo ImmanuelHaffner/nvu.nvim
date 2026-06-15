@@ -55,14 +55,21 @@
 --- would be silent corruption. Relax later if real usage shows the rule
 --- is too restrictive.
 ---
---- ## Fingerprint validation (not yet)
+--- ## Fingerprint validation
 ---
---- The plan to validate `op.baseline_fingerprint` against the live
---- file's current fingerprint lives here, but is **not yet wired**:
---- required-fingerprint enforcement waits for the schema to make the
---- field mandatory. For now the planner ignores it. When wired, this
---- is the place to add the `stale_fingerprint` check, between
---- `read_files()` and `resolve_anchors()`.
+--- For each op, the planner computes the live file's fingerprint and
+--- compares it against `op.baseline_fingerprint`. Mismatch produces a
+--- `stale_fingerprint` failure carrying both the live fingerprint and
+--- the content, so the LLM can replan in its next turn without an
+--- extra read round-trip. The check runs between `read_files` and
+--- `resolve_anchors` because there's no point resolving anchors
+--- against bytes the LLM didn't see.
+---
+--- The check is gated on `opts.bypass_fingerprint`. When true (a
+--- test-only bypass), the planner skips the fingerprint phase entirely
+--- — useful for spec files that exercise anchor / conflict logic
+--- without threading synthetic fingerprints. The bypass is per-call
+--- and never reaches `nvu.edit.apply(input)`, the LLM-facing seal.
 ---
 --- @module "nvu.edit.planner"
 
@@ -76,6 +83,7 @@
 
 local file_record = require'nvu.edit.file_record'
 local anchors     = require'nvu.edit.anchors'
+local fingerprint = require'nvu.edit.fingerprint'
 local schema      = require'nvu.edit.schema'
 
 local M = {}
@@ -339,14 +347,71 @@ local function detect_conflicts(located_ops)
     return conflicts
 end
 
+--- Verify every op's `baseline_fingerprint` against the live file
+--- fingerprint. One failure per op whose file mutated since the LLM
+--- read it.
+---
+--- The failure carries the **live** fingerprint and the **live**
+--- content, so the LLM's next-turn replan does not need an extra
+--- read round-trip. The op's claimed (stale) fingerprint is also
+--- echoed back as `baseline_fingerprint` for symmetry with the
+--- request shape.
+---
+--- Skips ops whose file failed to load (those produced an io_error
+--- already; no point comparing fingerprints against bytes we don't
+--- have).
+---
+--- @param ops     table[]
+--- @param records table<string, nvu.edit.FileRecord>
+--- @return table[] stale_failures
+local function validate_fingerprints(ops, records)
+    local failures = {}
+    for op_index, op in ipairs(ops) do
+        local abs = vim.fn.fnamemodify(op.path, ':p')
+        local rec = records[abs]
+        if rec ~= nil then
+            local live = fingerprint.compute(rec.content)
+            if op.baseline_fingerprint ~= live then
+                failures[#failures + 1] = {
+                    op_index             = op_index,
+                    reason               = schema.ERROR_REASONS.stale_fingerprint,
+                    path                 = op.path,
+                    baseline_fingerprint = op.baseline_fingerprint,
+                    live_fingerprint     = live,
+                    live_content         = rec.content,
+                    hint                 = 'the file has changed since you read it. '
+                        .. 'Re-read with neovim__read_with_fingerprint to get the '
+                        .. 'current fingerprint and content, then replan against '
+                        .. 'the new line numbers / substrings.',
+                }
+            end
+        end
+    end
+    return failures
+end
+
 --- Plan a batch of ops.
 ---
+--- ## Bypass for tests
+---
+--- `opts.bypass_fingerprint = true` skips the `validate_fingerprints`
+--- phase, letting spec files exercise anchor resolution / range
+--- conflict detection without threading synthetic fingerprints through
+--- every fixture. The bypass is per-call and never reaches
+--- `nvu.edit.apply(input)`, the LLM-facing seal: that function takes
+--- no opts and calls `M.plan(parsed)` with no opts, so production
+--- paths cannot relax this check.
+---
 --- @param parsed_input table   Output of `schema.validate`.
+--- @param opts? table  Internal. `{ bypass_fingerprint = boolean? }`. Tests only.
 --- @return nvu.edit.Plan|nil   plan      On success.
 --- @return nvu.edit.PlanFailure|nil      failure   On any per-op failure.
-function M.plan(parsed_input)
+function M.plan(parsed_input, opts)
     assert(type(parsed_input) == 'table', 'plan: parsed_input must be a table')
     assert(type(parsed_input.ops) == 'table', 'plan: parsed_input.ops must be a table')
+
+    opts = opts or {}
+    local check_fingerprints = not (opts.bypass_fingerprint == true)
 
     local warnings = {}
     -- Forward warnings from schema validation through the plan/failure
@@ -360,22 +425,45 @@ function M.plan(parsed_input)
     -- Phase 1: read every referenced file.
     local records, io_failures = read_files(parsed_input.ops)
 
-    -- Phase 2: resolve anchors. Skips ops whose file failed to load.
+    -- Phase 2: validate per-op baseline_fingerprint against the live
+    -- file fingerprint. Anchors resolved against bytes the LLM never
+    -- saw are worse than useless — the planned anchors were
+    -- meaningless. So this check runs before anchor resolution and
+    -- inhibits it on failure (handled below via the all_failures
+    -- collation).
+    local stale_failures = {}
+    if check_fingerprints then
+        stale_failures = validate_fingerprints(parsed_input.ops, records)
+    end
+
+    -- Phase 3: resolve anchors. Skips ops whose file failed to load.
+    -- We still resolve when there are stale_failures: the planner
+    -- accumulates ALL problems in one pass so the LLM sees them
+    -- together. Anchor resolution against stale content may itself
+    -- produce additional failures (anchor_not_found / anchor_ambiguous
+    -- because the content shifted), but those are real findings; the
+    -- LLM gets the most-informative response we can construct in a
+    -- single round-trip.
     local located_ops, anchor_failures = resolve_anchors(parsed_input.ops, contents, records)
 
-    -- Phase 3: detect cross-op range conflicts. Only meaningful when ALL
+    -- Phase 4: detect cross-op range conflicts. Only meaningful when ALL
     -- ops resolved — otherwise we'd report conflicts against ranges that
     -- might not even exist. Skip if there are unresolved ops, to keep
-    -- the LLM's signal:noise high.
+    -- the LLM's signal:noise high. Stale fingerprints also inhibit
+    -- conflict detection: if the content shifted, the resolved ranges
+    -- are based on bytes the LLM didn't see, so cross-op conflicts on
+    -- those ranges are misleading.
     local conflicts = {}
-    if #anchor_failures == 0 and #io_failures == 0 then
+    if #anchor_failures == 0 and #io_failures == 0 and #stale_failures == 0 then
         conflicts = detect_conflicts(located_ops)
     end
 
     -- Collate all failures. Order: io_errors first (root-cause), then
-    -- anchor failures (per-op), then conflicts (cross-op).
+    -- stale_fingerprint (per-op race), then anchor failures (per-op),
+    -- then conflicts (cross-op).
     local all_failures = {}
     for _, f in ipairs(io_failures)     do all_failures[#all_failures + 1] = f end
+    for _, f in ipairs(stale_failures)  do all_failures[#all_failures + 1] = f end
     for _, f in ipairs(anchor_failures) do all_failures[#all_failures + 1] = f end
     for _, f in ipairs(conflicts)       do all_failures[#all_failures + 1] = f end
 

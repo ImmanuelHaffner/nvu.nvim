@@ -34,12 +34,28 @@ end
 
 --- Apply a batch of edit operations.
 ---
+--- ## LLM-facing seal (architectural invariant)
+---
+--- This function is the engine's **single LLM-facing entry point**. The
+--- mcphub adapter calls it with the raw decoded request and nothing else.
+--- It deliberately takes one positional argument and **must never grow an
+--- opts parameter**: the internal modules below this function
+--- (`schema.validate`, `planner.plan`) accept opts including
+--- `bypass_fingerprint = true` for test isolation, and threading that
+--- through here would expose a production-side relaxation path. Keeping
+--- `M.apply` signature-pure is what makes "the LLM cannot bypass
+--- fingerprint enforcement" a structural property rather than a
+--- code-review property.
+---
 --- @param input table The decoded request body (raw, untyped — validation happens here).
 --- @return table response The structured response object.
 function M.apply(input)
     -- Phase 1: schema validation. On failure we return immediately with one
     -- `failed[]` entry per error, each carrying a hint describing the discrete
     -- next move the caller should make.
+    --
+    -- We deliberately do NOT thread any opts through to schema.validate here.
+    -- See the boundary-invariant note in this function's docstring.
     local ok, parsed_or_errors = schema.validate(input)
     if not ok then
         return {

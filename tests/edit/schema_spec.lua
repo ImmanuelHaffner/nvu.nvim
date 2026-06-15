@@ -7,7 +7,8 @@
 --- Or one file at a time (e.g. from inside a running Neovim):
 ---   :lua require'tests.runner'.run_file('tests/edit/schema_spec.lua')
 
-local schema = require'nvu.edit.schema'
+local schema  = require'nvu.edit.schema'
+local helpers = require'tests.edit.helpers'
 
 --- Find the first error matching a (path, reason) pair, or nil.
 local function find_error(errors, path, reason)
@@ -38,32 +39,32 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('top-level shape', function()
         it('rejects a non-table request', function()
-            local ok, errors = schema.validate('not an object')
+            local ok, errors = helpers.validate('not an object')
             assert.is_false(ok)
             assert_error(errors, '', schema.ERROR_REASONS.wrong_type)
         end)
 
         it('rejects a request with no `ops` field', function()
-            local ok, errors = schema.validate{}
+            local ok, errors = helpers.validate{}
             assert.is_false(ok)
             local e = assert_error(errors, 'ops', schema.ERROR_REASONS.missing_field)
             assert.is_not_nil(e.hint)
         end)
 
         it('rejects an `ops` of the wrong type', function()
-            local ok, errors = schema.validate{ ops = 'not an array' }
+            local ok, errors = helpers.validate{ ops = 'not an array' }
             assert.is_false(ok)
             assert_error(errors, 'ops', schema.ERROR_REASONS.wrong_type)
         end)
 
         it('rejects an empty `ops` array', function()
-            local ok, errors = schema.validate{ ops = {} }
+            local ok, errors = helpers.validate{ ops = {} }
             assert.is_false(ok)
             assert_error(errors, 'ops', schema.ERROR_REASONS.out_of_range)
         end)
 
         it('rejects a non-boolean `dry_run`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
                 dry_run = 'yes',
             }
@@ -72,7 +73,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects a non-string `description`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
                 description = 42,
             }
@@ -84,7 +85,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('contents map', function()
         it('rejects a non-object `contents`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
                 contents = 'not an object',
             }
@@ -93,7 +94,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects non-identifier label keys', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
                 contents = { ['1bad'] = 'x' },
             }
@@ -102,7 +103,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects non-string label values', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
                 contents = { good = 123 },
             }
@@ -114,7 +115,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('ops', function()
         it('rejects an op with no `kind`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } }
             }
             assert.is_false(ok)
@@ -122,7 +123,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects an unknown op kind', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'nope', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } }
             }
             assert.is_false(ok)
@@ -130,7 +131,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects a future-kind op as unsupported (not unknown)', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'rename_symbol', path = 'f',
                     position = { line = 0, character = 0 }, new_name = 'foo' } }
             }
@@ -140,7 +141,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects an op with no `path`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 } } }
             }
@@ -149,7 +150,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects an op with no `anchor`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f' } }
             }
             assert.is_false(ok)
@@ -157,7 +158,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('reports errors from multiple ops (does not bail on first)', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = {
                     { kind = 'delete_range', path = 'f', anchor = { by = 'unknown' } },
                     { kind = 'delete_range', path = 'g', anchor = { by = 'unknown' } },
@@ -172,7 +173,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('anchors', function()
         it('accepts a valid line_range anchor', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'line_range', start = 10, ['end'] = 12 } } }
             }
@@ -183,7 +184,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects a line_range with end < start', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'line_range', start = 12, ['end'] = 10 } } }
             }
@@ -192,7 +193,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects a line_range with non-positive bounds', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'line_range', start = 0, ['end'] = 5 } } }
             }
@@ -201,7 +202,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('accepts a unique_text anchor with no occurrence', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'unique_text', text = 'foo' } } }
             }
@@ -211,7 +212,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('accepts unique_text with occurrence={nth=N}', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'unique_text', text = 'foo', occurrence = { nth = 3 } } } }
             }
@@ -220,7 +221,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('accepts unique_text with occurrence="all" on delete_range', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'unique_text', text = 'foo', occurrence = 'all' } } }
             }
@@ -229,7 +230,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects unique_text with occurrence="all" on replace_range', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'unique_text', text = 'foo', occurrence = 'all' },
                     content = 'x' } }
@@ -240,7 +241,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects malformed occurrence', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'unique_text', text = 'foo', occurrence = 42 } } }
             }
@@ -249,7 +250,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects treesitter / lsp_symbol as unsupported', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'treesitter', query = '@function' } } }
             }
@@ -261,7 +262,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('positional modifiers', function()
         it('accepts before/after wrapping a base anchor', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
                     anchor = { by = 'after', of = { by = 'line_range', start = 5, ['end'] = 5 } },
                     content = 'x' } }
@@ -273,7 +274,7 @@ describe('nvu.edit.schema', function()
 
         it('accepts inside with at="start" or at="end"', function()
             for _, at in ipairs{'start', 'end'} do
-                local ok, parsed = schema.validate{
+                local ok, parsed = helpers.validate{
                     ops = { { kind = 'insert', path = 'f',
                         anchor = { by = 'inside',
                                    of = { by = 'line_range', start = 5, ['end'] = 10 },
@@ -286,7 +287,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects inside without `at`', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
                     anchor = { by = 'inside', of = { by = 'line_range', start = 5, ['end'] = 10 } },
                     content = 'x' } }
@@ -296,7 +297,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects insert with a bare base anchor (no modifier)', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
                     anchor = { by = 'line_range', start = 5, ['end'] = 5 },
                     content = 'x' } }
@@ -311,7 +312,7 @@ describe('nvu.edit.schema', function()
                 local op = { kind = kind, path = 'f',
                     anchor = { by = 'line_range', start = 5, ['end'] = 5 } }
                 if kind == 'replace_range' then op.content = 'x' end
-                local ok = schema.validate{ ops = { op } }
+                local ok = helpers.validate{ ops = { op } }
                 assert.is_true(ok, 'expected ' .. kind .. ' to accept a bare base anchor')
             end
         end)
@@ -320,7 +321,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('content / content_ref', function()
         it('requires content or content_ref on replace_range', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 } } }
             }
@@ -329,7 +330,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('requires content or content_ref on insert', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
                     anchor = { by = 'after', of = { by = 'line_range', start = 1, ['end'] = 1 } } } }
             }
@@ -338,7 +339,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects both content and content_ref together', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content = 'x', content_ref = 'y' } },
@@ -349,7 +350,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects a content_ref that does not resolve', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content_ref = 'nope' } },
@@ -365,7 +366,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects a content_ref that is not identifier-shaped', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content_ref = '1bad' } },
@@ -381,7 +382,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('marks content_ref labels as used (no warning when referenced)', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content_ref = 'helper' } },
@@ -393,7 +394,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('warns about unused content labels', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
                 contents = { unused = 'wasted' },
@@ -408,7 +409,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('indent', function()
         it('defaults to match_anchor when omitted', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content = 'x' } }
@@ -419,7 +420,7 @@ describe('nvu.edit.schema', function()
 
         it('accepts match_anchor / preserve', function()
             for _, mode in ipairs{'match_anchor', 'preserve'} do
-                local ok, parsed = schema.validate{
+                local ok, parsed = helpers.validate{
                     ops = { { kind = 'replace_range', path = 'f',
                         anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                         content = 'x', indent = mode } }
@@ -430,7 +431,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('accepts detect with a warning and falls back to match_anchor', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content = 'x', indent = 'detect' } }
@@ -443,7 +444,7 @@ describe('nvu.edit.schema', function()
         end)
 
         it('rejects an unknown indent mode', function()
-            local ok, errors = schema.validate{
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content = 'x', indent = 'something' } }
@@ -482,7 +483,7 @@ describe('nvu.edit.schema', function()
     ----------------------------------------------------------------
     describe('happy path: full request shape', function()
         it('parses a multi-op batch with inline and ref content', function()
-            local ok, parsed = schema.validate{
+            local ok, parsed = helpers.validate{
                 description = 'rename and helper',
                 dry_run = false,
                 ops = {

@@ -48,6 +48,8 @@
 
 local M = {}
 
+local fingerprint = require'nvu.edit.fingerprint'
+
 --------------------------------------------------------------------------------
 -- Error / warning taxonomy
 --------------------------------------------------------------------------------
@@ -572,7 +574,15 @@ end
 ---                         The JSON path embedded in error messages uses `op_index - 1`
 ---                         to stay 0-based on the wire — see the indexing convention
 ---                         note in this module's header.
-local function validate_op(op, op_index, contents, used_labels, errors, warnings)
+--- @param require_fingerprint boolean  When true (the production default), the op must
+---                         carry a well-formed `baseline_fingerprint`. When false (a
+---                         test-only bypass routed through `M.validate`'s `opts`),
+---                         the field is not required and its format is not validated.
+---                         The bypass is per-call by design; there is no module-level
+---                         state to leak between tests, and the LLM-facing
+---                         `nvu.edit.apply(input)` boundary does not accept opts so
+---                         production callers cannot relax this check.
+local function validate_op(op, op_index, contents, used_labels, errors, warnings, require_fingerprint)
     -- JSON path stays 0-based (matches JSON Pointer convention and the LLM's
     -- mental model of array indices). Only Lua-side state is 1-based.
     local op_path = string.format('ops[%d]', op_index - 1)
@@ -635,6 +645,38 @@ local function validate_op(op, op_index, contents, used_labels, errors, warnings
     local require_position = (kind == 'insert')
     local anchor = validate_anchor(op.anchor, op_path .. '.anchor', errors, op_index, require_position)
     if not anchor then return nil end
+
+    -- baseline_fingerprint presence + format. Gated on require_fingerprint so
+    -- tests that aren't about the fingerprint mechanism can call
+    -- M.validate(input, { bypass_fingerprint = true }) and skip the check.
+    -- See validate_op's docstring for the bypass rationale.
+    if require_fingerprint then
+        if op.baseline_fingerprint == nil then
+            table.insert(errors, err(op_path .. '.baseline_fingerprint', M.ERROR_REASONS.missing_field,
+                '`baseline_fingerprint` is required on every op',
+                {
+                    expected = 'string of exactly ' .. fingerprint.LEN .. ' lowercase-hex characters',
+                    op_index = op_index,
+                    hint = 'call neovim__read_with_fingerprint first; pass the returned '
+                        .. '`baseline_fingerprint` verbatim on every op against that file. '
+                        .. 'This closes the race between read and edit: '
+                        .. 'the planner refuses to apply if the file mutated in between.',
+                }))
+            return nil
+        end
+        if not fingerprint.is_valid_format(op.baseline_fingerprint) then
+            table.insert(errors, err(op_path .. '.baseline_fingerprint', M.ERROR_REASONS.bad_pattern,
+                '`baseline_fingerprint` must be exactly ' .. fingerprint.LEN .. ' lowercase-hex characters',
+                {
+                    expected = '^[0-9a-f]{' .. fingerprint.LEN .. '}$',
+                    got = op.baseline_fingerprint,
+                    op_index = op_index,
+                    hint = 'do not parse or regenerate the fingerprint; '
+                        .. 'pass it through verbatim from neovim__read_with_fingerprint',
+                }))
+            return nil
+        end
+    end
 
     if kind == 'delete_range' then
         return {
@@ -753,10 +795,27 @@ end
 
 --- Validate and parse an incoming request body.
 ---
+--- ## Bypass for tests
+---
+--- `opts.bypass_fingerprint = true` skips the `baseline_fingerprint`
+--- presence/format check inside each op. The flag exists so tests that
+--- aren't about the fingerprint mechanism don't have to thread synthetic
+--- fingerprints through every fixture.
+---
+--- The LLM-facing engine entry `nvu.edit.apply(input)` takes **no** opts
+--- argument and calls `M.validate(input)` with no opts, so the production
+--- path is structurally unable to relax this check — the bypass is not a
+--- protocol surface. The `opts` parameter is internal to the schema module
+--- and to tests that exercise it directly. See `nvu.edit.fingerprint`.
+---
 --- @param input table The raw decoded request body.
+--- @param opts? table  Internal. `{ bypass_fingerprint = boolean? }`. Tests only.
 --- @return boolean ok
 --- @return nvu.edit.schema.Parsed|nvu.edit.schema.Error[] parsed_or_errors
-function M.validate(input)
+function M.validate(input, opts)
+    opts = opts or {}
+    local require_fingerprint = not (opts.bypass_fingerprint == true)
+
     local errors = {}
     local warnings = {}
 
@@ -831,7 +890,7 @@ function M.validate(input)
     local used_labels = {}
     local parsed_ops = {}
     for i, op in ipairs(input.ops) do
-        local parsed = validate_op(op, i, contents, used_labels, errors, warnings)
+        local parsed = validate_op(op, i, contents, used_labels, errors, warnings, require_fingerprint)
         if parsed then table.insert(parsed_ops, parsed) end
     end
 

@@ -7,7 +7,7 @@
 --- Or one file at a time:
 ---   :lua require'tests.runner'.run_file('tests/edit/planner_spec.lua')
 
-local planner = require'nvu.edit.planner'
+local helpers = require'tests.edit.helpers'
 local schema  = require'nvu.edit.schema'
 
 --- Build the parsed-input shape the schema would produce, without
@@ -72,7 +72,7 @@ describe('nvu.edit.planner', function()
     describe('happy path', function()
         it('returns a Plan with located_ops, records, warnings', function()
             local path = tempfile('alpha\nbeta\ngamma\n')
-            local plan, fail = planner.plan(parsed_input{
+            local plan, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(2, 2), content = 'NEW' },
             })
             assert.is_nil(fail)
@@ -98,7 +98,7 @@ describe('nvu.edit.planner', function()
             input.warnings = {
                 { path = "contents['unused']", reason = 'unused_content_label', message = 'x' },
             }
-            local plan = assert(planner.plan(input))
+            local plan = assert(helpers.plan(input))
             assert.is.equal(1, #plan.warnings)
             assert.is.equal('unused_content_label', plan.warnings[1].reason)
             cleanup(path)
@@ -106,7 +106,7 @@ describe('nvu.edit.planner', function()
 
         it('resolves content_ref against the contents map', function()
             local path = tempfile('foo\n')
-            local plan = assert(planner.plan(parsed_input(
+            local plan = assert(helpers.plan(parsed_input(
                 { op{ path = path, anchor = lr(1, 1), content_ref = 'body' } },
                 { body = 'BIG\nMULTI\nLINE\n' }
             )))
@@ -116,7 +116,7 @@ describe('nvu.edit.planner', function()
 
         it('delete_range carries no content (nil)', function()
             local path = tempfile('foo\nbar\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ kind = 'delete_range', path = path, anchor = lr(1, 1) },
             }))
             assert.is_nil(plan.located_ops[1].content)
@@ -127,7 +127,7 @@ describe('nvu.edit.planner', function()
     describe('file caching', function()
         it('multi-op same file reads only once', function()
             local path = tempfile('a\nb\nc\nd\ne\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(1, 1), content = 'A' },
                 op{ path = path, anchor = lr(3, 3), content = 'C' },
                 op{ path = path, anchor = lr(5, 5), content = 'E' },
@@ -146,7 +146,7 @@ describe('nvu.edit.planner', function()
         it('different paths produce separate records', function()
             local p1 = tempfile('one\n')
             local p2 = tempfile('two\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ path = p1, anchor = lr(1, 1), content = 'X' },
                 op{ path = p2, anchor = lr(1, 1), content = 'Y' },
             }))
@@ -163,7 +163,7 @@ describe('nvu.edit.planner', function()
             local abs = tempfile('one\ntwo\nthree\n')
             local home_form = vim.fn.fnamemodify(abs, ':~')
 
-            local plan, fail = planner.plan(parsed_input{
+            local plan, fail = helpers.plan(parsed_input{
                 op{ path = abs,       anchor = lr(1, 1), content = 'X' },
                 op{ path = home_form, anchor = lr(3, 3), content = 'Y' },
             })
@@ -184,7 +184,7 @@ describe('nvu.edit.planner', function()
 
     describe('IO failures', function()
         it('missing file → io_error with 1-based op_index and original path', function()
-            local plan, fail = planner.plan(parsed_input{
+            local plan, fail = helpers.plan(parsed_input{
                 op{ path = '/nonexistent/never/exists', anchor = lr(1, 1), content = 'x' },
             })
             assert.is_nil(plan)
@@ -195,7 +195,7 @@ describe('nvu.edit.planner', function()
         end)
 
         it('multiple ops on the same broken path each get their own failure', function()
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = '/nonexistent/x', anchor = lr(1, 1), content = 'a' },
                 op{ path = '/nonexistent/x', anchor = lr(2, 2), content = 'b' },
             })
@@ -209,7 +209,7 @@ describe('nvu.edit.planner', function()
 
         it('failing op does not prevent other files from being planned', function()
             local good = tempfile('alive\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = '/nonexistent/q',  anchor = lr(1, 1), content = 'a' },
                 op{ path = good,             anchor = lr(1, 1), content = 'B' },
             })
@@ -227,7 +227,7 @@ describe('nvu.edit.planner', function()
     describe('anchor resolution failures', function()
         it('anchor_not_found enriched with 1-based op_index and original path', function()
             local path = tempfile('one\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(10, 10), content = 'X' },
             })
             assert.is.equal(1, #fail.failures)
@@ -240,7 +240,7 @@ describe('nvu.edit.planner', function()
 
         it('anchor_ambiguous bubbles up with candidates intact', function()
             local path = tempfile('X\nY\nX\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = ut('X'), content = 'Z' },
             })
             local f = fail.failures[1]
@@ -252,7 +252,7 @@ describe('nvu.edit.planner', function()
 
         it('accumulates failures across ops (does not short-circuit)', function()
             local path = tempfile('a\nb\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(99, 99), content = 'x' },  -- not found
                 op{ path = path, anchor = lr(100, 100), content = 'y' }, -- not found
             })
@@ -264,7 +264,7 @@ describe('nvu.edit.planner', function()
 
         it('IO failures and anchor failures are collated, IO first', function()
             local path = tempfile('alive\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = '/nonexistent/bad', anchor = lr(1, 1), content = 'a' },
                 op{ path = path,              anchor = lr(99, 99), content = 'b' },
             })
@@ -282,7 +282,7 @@ describe('nvu.edit.planner', function()
     describe('multi-range ops (occurrence: "all")', function()
         it('delete_range with occurrence:"all" produces lop.ranges', function()
             local path = tempfile('TODO\nbody\nTODO\nmore\nTODO\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ kind = 'delete_range', path = path, anchor = ut('TODO', 'all') },
             }))
             local lop = plan.located_ops[1]
@@ -294,7 +294,7 @@ describe('nvu.edit.planner', function()
 
         it('single-occurrence delete_range with "all" still uses ranges shape', function()
             local path = tempfile('UNIQUE\nrest\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ kind = 'delete_range', path = path, anchor = ut('UNIQUE', 'all') },
             }))
             assert.is_not_nil(plan.located_ops[1].ranges)
@@ -306,7 +306,7 @@ describe('nvu.edit.planner', function()
     describe('range conflict detection', function()
         it('two overlapping replace_range on same file → range_conflict on the later op', function()
             local path = tempfile('a\nb\nc\nd\ne\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(2, 4), content = 'X' },
                 op{ path = path, anchor = lr(3, 5), content = 'Y' },
             })
@@ -322,7 +322,7 @@ describe('nvu.edit.planner', function()
 
         it('non-overlapping ranges → no conflict', function()
             local path = tempfile('a\nb\nc\nd\ne\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(1, 2), content = 'X' },
                 op{ path = path, anchor = lr(4, 5), content = 'Y' },
             }))
@@ -333,7 +333,7 @@ describe('nvu.edit.planner', function()
         it('overlap across different files → no conflict', function()
             local p1 = tempfile('a\nb\nc\n')
             local p2 = tempfile('d\ne\nf\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ path = p1, anchor = lr(1, 3), content = 'X' },
                 op{ path = p2, anchor = lr(1, 3), content = 'Y' },
             }))
@@ -346,7 +346,7 @@ describe('nvu.edit.planner', function()
             -- insert before line 3 → position {3, 2} → line set {3}.
             -- replace lines 2..4 → line set {2, 3, 4}. Both touch line 3.
             local path = tempfile('a\nb\nc\nd\ne\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(2, 4), content = 'REPL' },
                 op{ kind = 'insert', path = path, anchor = before(lr(3, 3)), content = 'INS' },
             })
@@ -357,7 +357,7 @@ describe('nvu.edit.planner', function()
 
         it('two inserts at the same gap → conflict', function()
             local path = tempfile('a\nb\nc\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ kind = 'insert', path = path, anchor = before(lr(2, 2)), content = 'A' },
                 op{ kind = 'insert', path = path, anchor = before(lr(2, 2)), content = 'B' },
             })
@@ -368,7 +368,7 @@ describe('nvu.edit.planner', function()
 
         it('two inserts at different gaps → no conflict', function()
             local path = tempfile('a\nb\nc\nd\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ kind = 'insert', path = path, anchor = before(lr(2, 2)), content = 'A' },
                 op{ kind = 'insert', path = path, anchor = before(lr(4, 4)), content = 'B' },
             }))
@@ -385,7 +385,7 @@ describe('nvu.edit.planner', function()
             -- conflict depends on apply order. The conservative rule says
             -- yes — easier to relax later.)
             local path = tempfile('a\nb\nc\nd\ne\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(4, 5), content = 'REPL' },
                 op{ kind = 'insert', path = path, anchor = after_(lr(3, 3)), content = 'INS' },
             })
@@ -396,7 +396,7 @@ describe('nvu.edit.planner', function()
 
         it('multi-range (occurrence:"all") + single range that overlaps one of them → conflict', function()
             local path = tempfile('TODO\nbody\nTODO\nmore\nTODO\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ kind = 'delete_range', path = path, anchor = ut('TODO', 'all') },  -- lines 1, 3, 5
                 op{ path = path, anchor = lr(3, 3), content = 'X' },                    -- line 3
             })
@@ -410,7 +410,7 @@ describe('nvu.edit.planner', function()
             -- non-overlapping scan; they are inherently disjoint and
             -- belong to the same op. No conflict.
             local path = tempfile('TODO\nbody\nTODO\nmore\nTODO\n')
-            local plan = assert(planner.plan(parsed_input{
+            local plan = assert(helpers.plan(parsed_input{
                 op{ kind = 'delete_range', path = path, anchor = ut('TODO', 'all') },
             }))
             assert.is.equal(3, #plan.located_ops[1].ranges)
@@ -424,7 +424,7 @@ describe('nvu.edit.planner', function()
             -- a "conflict with op_index 1" failure when op 1 doesn't have
             -- a resolved range is meaningless noise.
             local path = tempfile('a\nb\nc\nd\ne\n')
-            local _, fail = planner.plan(parsed_input{
+            local _, fail = helpers.plan(parsed_input{
                 op{ path = path, anchor = lr(99, 99), content = 'X' },  -- not found
                 op{ path = path, anchor = lr(2, 4),   content = 'Y' },  -- would conflict if op 1 had resolved to [3..5]
             })
@@ -437,11 +437,11 @@ describe('nvu.edit.planner', function()
 
     describe('input validation (planner-bug catches)', function()
         it('rejects a non-table parsed_input', function()
-            assert.is_falsy(pcall(planner.plan, 'nope'))
+            assert.is_falsy(pcall(helpers.plan, 'nope'))
         end)
 
         it('rejects a parsed_input without ops', function()
-            assert.is_falsy(pcall(planner.plan, { contents = {} }))
+            assert.is_falsy(pcall(helpers.plan, { contents = {} }))
         end)
     end)
 end)
