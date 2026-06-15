@@ -10,6 +10,7 @@
 local fr           = require'nvu.edit.file_record'
 local line_range   = require'nvu.edit.anchors.line_range'
 local unique_text  = require'nvu.edit.anchors.unique_text'
+local modifier     = require'nvu.edit.anchors.modifier'
 local schema       = require'nvu.edit.schema'
 
 --- Build a parsed `line_range` anchor with the schema's key shape.
@@ -449,6 +450,185 @@ describe('nvu.edit.anchors.unique_text', function()
 
         it('rejects occurrence.nth < 1', function()
             assert.is_falsy(pcall(unique_text.resolve, ut('foo', { nth = 0 }), rec))
+        end)
+    end)
+end)
+
+describe('nvu.edit.anchors.modifier', function()
+
+    --- Build modifier-wrapped anchors. The `base` is the inner parsed anchor.
+    local function before(base)         return { by = 'before', of = base }                  end
+    local function after_(base)         return { by = 'after',  of = base }                  end
+    local function inside(base, at)     return { by = 'inside', of = base, at = at }         end
+
+    describe('before / after on a line_range base', function()
+        local rec = fr.from_content('t', 'l1\nl2\nl3\nl4\nl5\n')
+
+        it('before { line_range 3..3 } resolves to { 3, 2 } (zero-width above line 3)', function()
+            local range, fail = modifier.resolve(before(lr(3, 3)), rec)
+            assert.is_nil(fail)
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        end)
+
+        it('after { line_range 3..3 } resolves to { 4, 3 } (zero-width below line 3)', function()
+            local range = assert(modifier.resolve(after_(lr(3, 3)), rec))
+            assert.are.same({ start_line = 4, end_line = 3 }, range)
+        end)
+
+        it('before { line_range 1..1 } produces { 1, 0 } — insert at start of file', function()
+            local range = assert(modifier.resolve(before(lr(1, 1)), rec))
+            assert.are.same({ start_line = 1, end_line = 0 }, range)
+        end)
+
+        it('after { line_range last..last } produces { n+1, n } — insert at end of file', function()
+            local range = assert(modifier.resolve(after_(lr(5, 5)), rec))
+            assert.are.same({ start_line = 6, end_line = 5 }, range)
+        end)
+
+        it('before/after on a multi-line range use the first/last line of the range', function()
+            local range_b = assert(modifier.resolve(before(lr(2, 4)), rec))
+            assert.are.same({ start_line = 2, end_line = 1 }, range_b)
+            local range_a = assert(modifier.resolve(after_(lr(2, 4)), rec))
+            assert.are.same({ start_line = 5, end_line = 4 }, range_a)
+        end)
+    end)
+
+    describe('inside on a line_range base (documented redundancy)', function()
+        local rec = fr.from_content('t', 'l1\nl2\nl3\nl4\nl5\n')
+
+        it('inside at "start" on {3..3} → {4, 3}', function()
+            local range = assert(modifier.resolve(inside(lr(3, 3), 'start'), rec))
+            assert.are.same({ start_line = 4, end_line = 3 }, range)
+        end)
+
+        it('inside at "end" on {3..3} → {3, 2}', function()
+            local range = assert(modifier.resolve(inside(lr(3, 3), 'end'), rec))
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        end)
+
+        it('inside at "start" on multi-line {2..4} → {3, 2}', function()
+            local range = assert(modifier.resolve(inside(lr(2, 4), 'start'), rec))
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        end)
+
+        it('inside at "end" on multi-line {2..4} → {4, 3}', function()
+            local range = assert(modifier.resolve(inside(lr(2, 4), 'end'), rec))
+            assert.are.same({ start_line = 4, end_line = 3 }, range)
+        end)
+    end)
+
+    describe('modifiers on a unique_text base', function()
+        local rec = fr.from_content('t', 'before_section\nMARKER\nafter_section\n')
+
+        it('before { unique_text "MARKER" } → { 2, 1 }', function()
+            local range = assert(modifier.resolve(before(ut('MARKER')), rec))
+            assert.are.same({ start_line = 2, end_line = 1 }, range)
+        end)
+
+        it('after { unique_text "MARKER" } → { 3, 2 }', function()
+            local range = assert(modifier.resolve(after_(ut('MARKER')), rec))
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        end)
+
+        it('inside at "start" { unique_text "MARKER" } → { 3, 2 }', function()
+            local range = assert(modifier.resolve(inside(ut('MARKER'), 'start'), rec))
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        end)
+
+        it('inside at "end" { unique_text "MARKER" } → { 2, 1 }', function()
+            local range = assert(modifier.resolve(inside(ut('MARKER'), 'end'), rec))
+            assert.are.same({ start_line = 2, end_line = 1 }, range)
+        end)
+
+        it('modifier on multi-line unique_text uses the spanning range', function()
+            local rec2 = fr.from_content('t', 'a\nb\nFROM\nTO\nc\n')
+            local range_a = assert(modifier.resolve(after_(ut('FROM\nTO')), rec2))
+            -- FROM\nTO spans lines 3..4; after → { 5, 4 }
+            assert.are.same({ start_line = 5, end_line = 4 }, range_a)
+        end)
+    end)
+
+    describe('failure propagation from the base resolver', function()
+        local rec = fr.from_content('t', 'a\nb\nc\n')
+
+        it('base anchor_not_found bubbles up with modifier-wrapped anchor in echo-back', function()
+            local mod = before(lr(99, 99))
+            local range, fail = modifier.resolve(mod, rec)
+            assert.is_nil(range)
+            assert.is.equal(schema.ERROR_REASONS.anchor_not_found, fail.reason)
+            -- The echo-back is the OUTER modifier shape, not the inner base.
+            assert.are.same(mod, fail.anchor)
+        end)
+
+        it('base anchor_ambiguous bubbles up with modifier-wrapped anchor in echo-back', function()
+            local rec2 = fr.from_content('t', 'X\nY\nX\n')
+            local mod = before(ut('X'))
+            local range, fail = modifier.resolve(mod, rec2)
+            assert.is_nil(range)
+            assert.is.equal(schema.ERROR_REASONS.anchor_ambiguous, fail.reason)
+            assert.are.same(mod, fail.anchor)
+            -- Candidates from the base still surface — the LLM needs them.
+            assert.is_not_nil(fail.candidates)
+            assert.is.equal(2, #fail.candidates)
+        end)
+    end)
+
+    describe('multi-range base (occurrence: "all") is refused', function()
+        it('asserts when base resolves to {ranges=...}', function()
+            local rec = fr.from_content('t', 'A\nB\nA\n')
+            -- "all" produces a {ranges=...} result, which modifiers can't use.
+            local mod = before(ut('A', 'all'))
+            local ok = pcall(modifier.resolve, mod, rec)
+            assert.is_falsy(ok)
+        end)
+    end)
+
+    describe('invariant assertions (planner-bug catches)', function()
+        local rec = fr.from_content('t', 'a\nb\n')
+
+        it('rejects a non-table anchor', function()
+            assert.is_falsy(pcall(modifier.resolve, 'not-a-table', rec))
+        end)
+
+        it('rejects an anchor whose `by` is not a modifier kind', function()
+            assert.is_falsy(pcall(modifier.resolve, { by = 'line_range', start = 1, ['end'] = 1, of = lr(1,1) }, rec))
+        end)
+
+        it('rejects modifier without `of`', function()
+            assert.is_falsy(pcall(modifier.resolve, { by = 'before' }, rec))
+        end)
+
+        it('rejects inside without `at`', function()
+            assert.is_falsy(pcall(modifier.resolve, { by = 'inside', of = lr(1, 1) }, rec))
+        end)
+
+        it('rejects inside with at != "start"|"end"', function()
+            assert.is_falsy(pcall(modifier.resolve, { by = 'inside', of = lr(1, 1), at = 'middle' }, rec))
+        end)
+
+        it('rejects a non-FileRecord record', function()
+            assert.is_falsy(pcall(modifier.resolve, before(lr(1, 1)), { not_a = 'record' }))
+        end)
+    end)
+
+    describe('zero-width position convention is consistent', function()
+        -- The zero-width invariant: end_line == start_line - 1. This is
+        -- what the applier maps to "pure insert, replace nothing".
+        local rec = fr.from_content('t', 'a\nb\nc\n')
+
+        it('every modifier output satisfies end_line == start_line - 1', function()
+            local cases = {
+                before(lr(2, 2)),
+                after_(lr(2, 2)),
+                inside(lr(2, 2), 'start'),
+                inside(lr(2, 2), 'end'),
+                before(lr(1, 3)),
+                after_(lr(1, 3)),
+            }
+            for _, anchor in ipairs(cases) do
+                local r = assert(modifier.resolve(anchor, rec))
+                assert.is.equal(r.start_line - 1, r.end_line)
+            end
         end)
     end)
 end)
