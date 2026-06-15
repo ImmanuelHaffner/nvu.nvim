@@ -11,6 +11,7 @@ local fr           = require'nvu.edit.file_record'
 local line_range   = require'nvu.edit.anchors.line_range'
 local unique_text  = require'nvu.edit.anchors.unique_text'
 local modifier     = require'nvu.edit.anchors.modifier'
+local anchors      = require'nvu.edit.anchors'
 local schema       = require'nvu.edit.schema'
 
 --- Build a parsed `line_range` anchor with the schema's key shape.
@@ -629,6 +630,97 @@ describe('nvu.edit.anchors.modifier', function()
                 local r = assert(modifier.resolve(anchor, rec))
                 assert.is.equal(r.start_line - 1, r.end_line)
             end
+        end)
+    end)
+end)
+
+describe('nvu.edit.anchors (dispatcher)', function()
+
+    --- Reuse the helpers defined in the resolver-spec blocks above.
+    local function before(base)     return { by = 'before', of = base }              end
+    local function after_(base)     return { by = 'after',  of = base }              end
+    local function inside(base, at) return { by = 'inside', of = base, at = at }     end
+
+    local rec = fr.from_content('t', 'a\nb\nc\nd\ne\n')
+
+    describe('routes to the correct resolver based on anchor.by', function()
+        it('line_range → line_range.resolve', function()
+            local range, fail = anchors.resolve(lr(2, 3), rec)
+            assert.is_nil(fail)
+            -- Identical shape to calling line_range directly.
+            local direct = assert(line_range.resolve(lr(2, 3), rec))
+            assert.are.same(direct, range)
+        end)
+
+        it('unique_text → unique_text.resolve', function()
+            local rec2 = fr.from_content('t', 'foo\nbar\nbaz\n')
+            local range, fail = anchors.resolve(ut('bar'), rec2)
+            assert.is_nil(fail)
+            local direct = assert(unique_text.resolve(ut('bar'), rec2))
+            assert.are.same(direct, range)
+        end)
+
+        it('before → modifier.resolve', function()
+            local range, fail = anchors.resolve(before(lr(2, 2)), rec)
+            assert.is_nil(fail)
+            local direct = assert(modifier.resolve(before(lr(2, 2)), rec))
+            assert.are.same(direct, range)
+        end)
+
+        it('after → modifier.resolve', function()
+            local range, fail = anchors.resolve(after_(lr(2, 2)), rec)
+            assert.is_nil(fail)
+            local direct = assert(modifier.resolve(after_(lr(2, 2)), rec))
+            assert.are.same(direct, range)
+        end)
+
+        it('inside → modifier.resolve', function()
+            local range, fail = anchors.resolve(inside(lr(2, 4), 'start'), rec)
+            assert.is_nil(fail)
+            local direct = assert(modifier.resolve(inside(lr(2, 4), 'start'), rec))
+            assert.are.same(direct, range)
+        end)
+    end)
+
+    describe('return-shape passthrough', function()
+        it('passes through the multi-range shape from unique_text + "all"', function()
+            local rec2 = fr.from_content('t', 'A\nB\nA\n')
+            local result, fail = anchors.resolve(ut('A', 'all'), rec2)
+            assert.is_nil(fail)
+            assert.is_not_nil(result.ranges)
+            assert.is.equal(2, #result.ranges)
+        end)
+
+        it('passes through anchor_ambiguous failures unchanged', function()
+            local rec2 = fr.from_content('t', 'X\nY\nX\n')
+            local range, fail = anchors.resolve(ut('X'), rec2)
+            assert.is_nil(range)
+            assert.is.equal(schema.ERROR_REASONS.anchor_ambiguous, fail.reason)
+            assert.is.equal(2, #fail.candidates)
+        end)
+
+        it('passes through anchor_not_found failures unchanged', function()
+            local range, fail = anchors.resolve(lr(99, 99), rec)
+            assert.is_nil(range)
+            assert.is.equal(schema.ERROR_REASONS.anchor_not_found, fail.reason)
+        end)
+    end)
+
+    describe('rejects unknown anchor kinds', function()
+        it('errors on a `by` value we do not recognise', function()
+            -- Schema upstream catches `unknown_kind` / `unsupported_anchor_kind`;
+            -- the dispatcher's assertion is defence-in-depth for planner bugs
+            -- that might bypass schema validation.
+            local ok = pcall(anchors.resolve, { by = 'treesitter', query = '@function' }, rec)
+            assert.is_falsy(ok)
+        end)
+
+        it('errors on a non-table anchor', function()
+            assert.is_falsy(pcall(anchors.resolve, 'not-a-table', rec))
+        end)
+
+        it('errors on a nil anchor', function()
+            assert.is_falsy(pcall(anchors.resolve, nil, rec))
         end)
     end)
 end)
