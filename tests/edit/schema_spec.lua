@@ -468,10 +468,12 @@ describe('nvu.edit.schema', function()
         end)
 
         it('counts errors and distinct ops', function()
+            -- `op_index` is 1-based Lua-native; JSON `path` stays 0-based.
+            -- See the indexing-convention note in schema.lua's header.
             local s = schema.format_error_summary{
-                { path = 'ops[0].kind', reason = 'unknown_kind', message = 'x', op_index = 0 },
-                { path = 'ops[0].path', reason = 'wrong_type',   message = 'x', op_index = 0 },
-                { path = 'ops[1].kind', reason = 'unknown_kind', message = 'x', op_index = 1 },
+                { path = 'ops[0].kind', reason = 'unknown_kind', message = 'x', op_index = 1 },
+                { path = 'ops[0].path', reason = 'wrong_type',   message = 'x', op_index = 1 },
+                { path = 'ops[1].kind', reason = 'unknown_kind', message = 'x', op_index = 2 },
             }
             assert.is_truthy(s:find('3 errors across 2 ops'))
         end)

@@ -16,6 +16,34 @@
 ---   * The mcphub layer above us does NOT enforce inputSchema beyond
 ---     `type == "object"`. Validation here is authoritative.
 ---
+--- ## Indexing convention (load-bearing)
+---
+--- Two different index spaces coexist in this engine, and they are
+--- deliberately offset by one:
+---
+---   * **Lua-side `op_index`**: 1-based. Matches `parsed_ops[op_index]`,
+---     `#parsed_ops`, and `ipairs` iteration order. Used by every
+---     module inside `lua/nvu/edit/` (schema, planner, applier,
+---     response).
+---   * **JSON-side `op_index` and `path`**: 0-based. Matches JSON Pointer
+---     (RFC 6901) and the JavaScript/Python/TypeScript array-index
+---     convention every LLM is fluent in.
+---
+--- The translation happens at exactly two sites:
+---   1. Inside `validate_op`, where the JSON path string `"ops[N]"` is
+---      formatted with `op_index - 1`.
+---   2. Inside `response.lua` (future), where every `op_index` field on
+---      its way to JSON gets `- 1`.
+---
+--- Everywhere else, `op_index` is 1-based Lua. Why this split: 0-based
+--- Lua indices interact badly with `ipairs` (which starts at 1 and
+--- silently skips index 0), `#tbl` (which is undefined when index 0 is
+--- present), and `table.insert` (which appends after `#tbl`). A
+--- 0-based `op_index` stored on a Lua-1-based table is a foot-gun in
+--- waiting. The 1-based-in / 0-based-out convention costs one
+--- subtraction at the protocol edge and removes a whole class of
+--- off-by-one bugs from the engine internals.
+---
 --- @module "nvu.edit.schema"
 
 local M = {}
@@ -32,7 +60,12 @@ local M = {}
 --- @field hint?    string  Discrete next move the caller should take.
 --- @field expected? string Optional: what type/shape was expected.
 --- @field got?     any     Optional: what was actually present (truncated/enriched).
---- @field op_index? integer Optional: 0-based index into `ops[]` if applicable.
+--- @field op_index? integer Optional: **1-based** Lua-native index into `parsed_ops[]`.
+---                          The serialiser (`response.lua`) subtracts 1 before emitting
+---                          to JSON, so the LLM sees a 0-based index matching the
+---                          JSON path `"ops[N]"`. Inside Lua-land we stay 1-based to
+---                          avoid `ipairs` silently skipping the first entry. See
+---                          the indexing convention note in this module's header.
 
 M.ERROR_REASONS = {
     -- Schema-validation reasons (raised by schema.lua itself).
@@ -533,8 +566,16 @@ local function validate_indent(op, op_path, op_index, warnings, errors)
 end
 
 --- Validate one op. Returns parsed op table on success, nil on failure.
+---
+--- @param op       table   The raw op input.
+--- @param op_index integer **1-based** Lua index; `parsed_ops[op_index]` will be this op.
+---                         The JSON path embedded in error messages uses `op_index - 1`
+---                         to stay 0-based on the wire — see the indexing convention
+---                         note in this module's header.
 local function validate_op(op, op_index, contents, used_labels, errors, warnings)
-    local op_path = string.format('ops[%d]', op_index)
+    -- JSON path stays 0-based (matches JSON Pointer convention and the LLM's
+    -- mental model of array indices). Only Lua-side state is 1-based.
+    local op_path = string.format('ops[%d]', op_index - 1)
 
     if not expect_table(op, op_path, errors, {
         op_index = op_index,
@@ -784,12 +825,13 @@ function M.validate(input)
             }))
     end
 
-    -- Validate every op. Op_path uses 0-based indices so the path matches the
-    -- `op_index` field directly.
+    -- Validate every op. `op_index` is 1-based Lua-native; the JSON `path`
+    -- field inside each error record uses 0-based form (`ops[0]`, `ops[1]`,
+    -- ...) — that translation happens inside `validate_op`.
     local used_labels = {}
     local parsed_ops = {}
     for i, op in ipairs(input.ops) do
-        local parsed = validate_op(op, i - 1, contents, used_labels, errors, warnings)
+        local parsed = validate_op(op, i, contents, used_labels, errors, warnings)
         if parsed then table.insert(parsed_ops, parsed) end
     end
 
