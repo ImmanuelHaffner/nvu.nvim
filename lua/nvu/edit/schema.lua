@@ -54,6 +54,7 @@ M.ERROR_REASONS = {
     anchor_not_found          = 'anchor_not_found',             -- anchor resolved to zero matches
     range_conflict            = 'range_conflict',               -- two ops claim overlapping ranges in one file
     io_error                  = 'io_error',                     -- could not read the file
+    stale_snapshot            = 'stale_snapshot',               -- op's `snapshot` does not match current file hash
 }
 
 M.WARNING_REASONS = {
