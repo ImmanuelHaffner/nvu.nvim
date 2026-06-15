@@ -1,25 +1,38 @@
 --- mcphub adapter for the `nvu.edit` engine.
 ---
---- Registers the `neovim__apply_edit` tool on mcphub's existing `neovim`
---- native server via `mcphub.add_tool("neovim", …)`. This is the *only*
---- file in `nvu.nvim` that imports `mcphub`; the engine itself
---- (`nvu.edit`) stays pure Lua and unit-testable in isolation.
+--- Registers two tools on mcphub's existing `neovim` native server via
+--- `mcphub.add_tool("neovim", …)`:
+---
+---   * `neovim__apply_edit`         — structured batch edits
+---   * `neovim__read_with_snapshot` — read + snapshot-token emission
+---
+--- These are intended to ship together. `apply_edit` requires every op
+--- to carry a `snapshot` field; the only legitimate source of those
+--- tokens is `read_with_snapshot`. Once both are registered, the user
+--- should disable the legacy `neovim__read_file` tool from mcphub's
+--- config — required snapshots make any other read path a footgun.
+---
+--- This is the *only* file in `nvu.nvim` that imports `mcphub`; the
+--- engines themselves (`nvu.edit`, `nvu.edit.read`) stay pure Lua and
+--- unit-testable in isolation.
 ---
 --- This file is intended to be `require`d from the user's Neovim config
---- *after* `mcphub.setup{}` has run. Side effect: registers one tool.
+--- *after* `mcphub.setup{}` has run. Side effect: registers both tools.
 ---
 --- @module "mcphub._native.edit"
 
 local ok, mcphub = pcall(require, 'mcphub')
 if not ok then
     vim.notify(
-        'mcphub._native.edit: mcphub.nvim is not available; neovim__apply_edit will not be registered',
+        'mcphub._native.edit: mcphub.nvim is not available; '
+        .. 'neovim__apply_edit and neovim__read_with_snapshot will not be registered',
         vim.log.levels.WARN
     )
     return
 end
 
-local edit = require'nvu.edit'
+local edit      = require'nvu.edit'
+local edit_read = require'nvu.edit.read'
 
 --------------------------------------------------------------------------------
 -- Anchor schemas
@@ -329,4 +342,60 @@ if not ok_add then
     )
 end
 
-return apply_edit_tool
+--------------------------------------------------------------------------------
+-- neovim__read_with_snapshot — read a file and emit a snapshot token
+--------------------------------------------------------------------------------
+
+local read_input_schema = {
+    type = 'object',
+    properties = {
+        path = { type = 'string', minLength = 1 },
+    },
+    required = { 'path' },
+    additionalProperties = false,
+}
+
+local read_description = [[
+Read a file and receive its content together with an opaque snapshot
+token. The token is the LLM's receipt: pass it back verbatim in the
+`snapshot` field of every `apply_edit` op against this file. The
+planner re-hashes the file at apply time and refuses the batch on
+mismatch (`stale_snapshot`), closing the race where the file mutates
+between read and edit.
+
+This is the only read path that emits a snapshot — and therefore the
+only read path you should use when planning to edit. Treat the token
+as opaque; do not parse or regenerate it.
+
+Returns: { status: "ok", path, content, snapshot, n_lines }
+On error: { status: "failed", summary, failed: [{ reason, path, message, hint }] }
+]]
+
+--- @type MCPTool
+local read_with_snapshot_tool = {
+    name        = 'read_with_snapshot',
+    description = read_description,
+    inputSchema = read_input_schema,
+    handler = function(req, res)
+        local params = req.params or {}
+        local response = edit_read.read_with_snapshot(params.path)
+        local ok_json, encoded = pcall(vim.json.encode, response)
+        if not ok_json then
+            return res:error('read_with_snapshot: failed to encode response', { response = response })
+        end
+        return res:text(encoded):send()
+    end,
+}
+
+local ok_add_read, err_read = pcall(mcphub.add_tool, 'neovim', read_with_snapshot_tool)
+if not ok_add_read then
+    vim.notify(
+        'mcphub._native.edit: failed to register neovim__read_with_snapshot: ' .. tostring(err_read),
+        vim.log.levels.ERROR
+    )
+end
+
+return {
+    apply_edit         = apply_edit_tool,
+    read_with_snapshot = read_with_snapshot_tool,
+}
