@@ -367,4 +367,10 @@ function M.drive_file(request, file_cb)
     }
 end
 
+--- Test-only surface. Exposes file-local helpers so specs can exercise the
+--- borrowing edge cases (mid-buffer / EOF / whole-file) without needing to
+--- stand up `EditUI` itself. Not part of the module's public contract — any
+--- caller outside `tests/` reaching into this table is on their own.
+M._test = { widen_for_editui = widen_for_editui }
+
 return M
