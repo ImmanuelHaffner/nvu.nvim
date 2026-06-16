@@ -331,12 +331,19 @@ local apply_edit_tool = {
     description = tool_description,
     inputSchema = input_schema,
     handler = function(req, res)
-        local response = edit.apply(req.params or {})
-        local ok_json, encoded = pcall(vim.json.encode, response)
-        if not ok_json then
-            return res:error('apply_edit: failed to encode response', { response = response })
-        end
-        return res:text(encoded):send()
+        -- The engine is async: `edit.apply` takes the request, a per-file
+        -- driver, and a completion callback. The driver is the mcphub-side
+        -- `EditUI` backend (the production driver). The completion callback
+        -- encodes the response and dispatches it on the mcphub `res` channel.
+        local ui_backend = require'mcphub._native.edit.ui_backend'
+        edit.apply(req.params or {}, ui_backend.drive_file, function(response)
+            local ok_json, encoded = pcall(vim.json.encode, response)
+            if not ok_json then
+                res:error('apply_edit: failed to encode response', { response = response })
+                return
+            end
+            res:text(encoded):send()
+        end)
     end,
 }
 
