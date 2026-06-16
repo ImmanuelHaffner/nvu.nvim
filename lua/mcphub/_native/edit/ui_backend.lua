@@ -26,6 +26,135 @@
 
 local M = {}
 
+--- Widen a zero-width-range or empty-replace block by borrowing one
+--- neighbouring buffer line, so that the `LocatedBlock` handed to mcphub's
+--- `EditUI` has both `found_lines` and `replace_lines` non-empty.
+---
+--- ## Why this exists
+---
+--- `EditUI._generate_hunk_blocks` constructs the inputs to `vim.diff` as
+--- `table.concat(lines, "\n") .. "\n"`. For an empty list this is `"\n"`,
+--- which `vim.diff` interprets as a **single empty line**, not zero lines.
+--- That breaks two ways:
+---
+---   * **Pure deletion** (our `delete_range`, `replace_lines == []`):
+---     `vim.diff` reports `new_count = 1` instead of `0`. The hunk is
+---     classified as `"change"` instead of `"deletion"`; the "change"
+---     branch in `_highlight_hunk_block` then calls `nvim_buf_set_extmark`
+---     with an `end_row` past the (now-shorter) buffer, crashing with
+---     `E5111: Invalid 'end_row': out of range`.
+---
+---   * **Pure insertion** (zero-width range, `found_lines == []`):
+---     `vim.diff` reports `old_count = 1` instead of `0`. Hunk becomes
+---     `"change"` instead of `"addition"`; the highlighted row is off by
+---     one. (Doesn't crash, but mishighlights.)
+---
+--- The principled fix is in mcphub. The pragmatic fix is here: synthesise
+--- a non-zero-width pair by borrowing one adjacent buffer line. `vim.diff`
+--- then naturally splits the resulting pair into a clean addition or
+--- deletion sub-hunk (the borrowed line becomes context), so the user
+--- sees correct highlighting and `EditUI`'s apply path produces the
+--- byte-identical buffer state.
+---
+--- ## Borrowing strategy
+---
+---   * **Pure insert** (`range = { N, N-1 }`, `replace_lines = R`):
+---     borrow line `N` if it exists, else line `N-1` (insert-at-EOF case).
+---     Widen the range to cover the borrowed line and append/prepend it
+---     to `replace_lines` so the net buffer effect is unchanged.
+---
+---   * **Pure delete** (`range = { S, E }`, `replace_lines = []`):
+---     borrow line `E+1` if it exists, else line `S-1` (delete-to-EOF).
+---     Widen the range to cover the borrowed line; `replace_lines`
+---     becomes `[borrowed]`.
+---
+---   * **Pure delete of the entire buffer** (`S == 1`, `E == #buf`,
+---     `replace_lines = []`): no line to borrow on either side. Returns
+---     `nil`; the caller must apply this block via a direct
+---     `nvim_buf_set_lines` path instead of going through `EditUI`. (Not
+---     reachable from the MVP anchor set in practice — would require a
+---     user-issued `delete_range` covering all lines.)
+---
+--- @param bufnr integer
+--- @param block nvu.edit.applier.Block
+--- @return nvu.edit.applier.Block?  Widened block, or `nil` for the
+---     degenerate whole-file-delete case.
+local function widen_for_editui(bufnr, block)
+    local s, e = block.range.start_line, block.range.end_line
+    local replace_lines = block.replace_lines
+
+    local is_pure_insert = e < s              -- zero-width position
+    local is_pure_delete = #replace_lines == 0 and not is_pure_insert
+
+    if not is_pure_insert and not is_pure_delete then
+        return block  -- nothing to widen
+    end
+
+    local total = vim.api.nvim_buf_line_count(bufnr)
+
+    if is_pure_insert then
+        -- Anchor `{N, N-1}` (insert before line N).
+        local insert_at = s  -- the line that would shift down
+        if insert_at <= total then
+            -- Borrow line N forward: range becomes {N, N}, replace becomes [...R, line_N].
+            local borrowed = vim.api.nvim_buf_get_lines(bufnr, insert_at - 1, insert_at, false)[1]
+            local new_replace = {}
+            for _, l in ipairs(replace_lines) do new_replace[#new_replace + 1] = l end
+            new_replace[#new_replace + 1] = borrowed
+            return {
+                block_id      = block.block_id,
+                op_index      = block.op_index,
+                kind          = block.kind,
+                range         = { start_line = insert_at, end_line = insert_at },
+                replace_lines = new_replace,
+            }
+        elseif total >= 1 then
+            -- Insert-at-EOF: borrow line `total` backward.
+            -- Range becomes {total, total}, replace becomes [line_total, ...R].
+            local borrowed = vim.api.nvim_buf_get_lines(bufnr, total - 1, total, false)[1]
+            local new_replace = { borrowed }
+            for _, l in ipairs(replace_lines) do new_replace[#new_replace + 1] = l end
+            return {
+                block_id      = block.block_id,
+                op_index      = block.op_index,
+                kind          = block.kind,
+                range         = { start_line = total, end_line = total },
+                replace_lines = new_replace,
+            }
+        else
+            -- Empty buffer; nothing to borrow. Fall through to nil-return.
+            return nil
+        end
+    end
+
+    -- is_pure_delete
+    if e < total then
+        -- Borrow line E+1 forward: range becomes {S, E+1}, replace becomes [line_{E+1}].
+        local borrowed = vim.api.nvim_buf_get_lines(bufnr, e, e + 1, false)[1]
+        return {
+            block_id      = block.block_id,
+            op_index      = block.op_index,
+            kind          = block.kind,
+            range         = { start_line = s, end_line = e + 1 },
+            replace_lines = { borrowed },
+        }
+    elseif s > 1 then
+        -- Delete-to-EOF: borrow line S-1 backward.
+        -- Range becomes {S-1, E}, replace becomes [line_{S-1}].
+        local borrowed = vim.api.nvim_buf_get_lines(bufnr, s - 2, s - 1, false)[1]
+        return {
+            block_id      = block.block_id,
+            op_index      = block.op_index,
+            kind          = block.kind,
+            range         = { start_line = s - 1, end_line = e },
+            replace_lines = { borrowed },
+        }
+    else
+        -- Whole-file delete: S == 1, E == total, nothing to borrow.
+        return nil
+    end
+end
+
 --- Build the `LocatedBlock`-shaped table `EditUI` expects, from one of the
 --- applier's `Block`s. `EditUI` needs:
 ---
@@ -50,12 +179,17 @@ local M = {}
 local function to_located_block(bufnr, block)
     local start_line, end_line = block.range.start_line, block.range.end_line
 
-    -- Read the lines currently in this range. For a zero-width insertion
-    -- (`end_line < start_line`), `nvim_buf_get_lines(s-1, e, ...)` with
-    -- `s-1 == e` returns the empty list, which is what we want.
-    local found_lines = (end_line < start_line)
-        and {}
-        or vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
+    -- `end_line < start_line` would be a zero-width insertion, but the
+    -- caller (`drive_file`) has already widened pure inserts and pure
+    -- deletes via `widen_for_editui` before calling us. We assert that
+    -- the post-widen range is non-zero-width and has non-empty replace
+    -- content — anything else would crash `EditUI` downstream.
+    assert(end_line >= start_line,
+        'to_located_block: zero-width range slipped past widen_for_editui')
+    assert(#block.replace_lines > 0,
+        'to_located_block: empty replace_lines slipped past widen_for_editui')
+
+    local found_lines = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
 
     local search_text   = table.concat(found_lines, '\n')
     local replace_lines = block.replace_lines
@@ -148,9 +282,28 @@ function M.drive_file(request, file_cb)
 
     -- Convert applier blocks → EditUI LocatedBlocks. Also keep the parallel
     -- block_id list for outcome aggregation.
+    --
+    -- Each block is first run through `widen_for_editui` to side-step
+    -- mcphub's `_generate_hunk_blocks` bug on zero-width / empty-replace
+    -- pairs. See that helper's docstring for the full rationale. The
+    -- whole-file-delete degenerate case (helper returns `nil`) is not
+    -- yet wired through a direct-apply fallback — it would require a
+    -- separate code path that bypasses `EditUI` entirely. Surfacing it
+    -- as an error keeps the contract well-defined until we hit it in
+    -- practice.
     local located_blocks, block_ids = {}, {}
     for _, b in ipairs(request.blocks) do
-        located_blocks[#located_blocks + 1] = to_located_block(request.bufnr, b)
+        local widened = widen_for_editui(request.bufnr, b)
+        if widened == nil then
+            return file_cb{
+                status        = 'cancelled',
+                cancel_reason = string.format(
+                    'block %s (op %d): whole-file delete is not supported by the EditUI driver',
+                    b.block_id, b.op_index or -1),
+                per_block     = {},
+            }
+        end
+        located_blocks[#located_blocks + 1] = to_located_block(request.bufnr, widened)
         block_ids[#block_ids + 1] = b.block_id
     end
 
