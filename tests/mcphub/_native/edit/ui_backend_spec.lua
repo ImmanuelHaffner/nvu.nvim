@@ -12,8 +12,10 @@
 ---
 --- @module "tests.mcphub._native.edit.ui_backend_spec"
 
-local ui_backend       = require'mcphub._native.edit.ui_backend'
-local widen_for_editui = ui_backend._test.widen_for_editui
+local ui_backend                  = require'mcphub._native.edit.ui_backend'
+local widen_for_editui            = ui_backend._test.widen_for_editui
+local effective_range_after_widen = ui_backend._test.effective_range_after_widen
+local detect_widen_collisions     = ui_backend._test.detect_widen_collisions
 
 --- Create a scratch buffer (no file, `buftype = nofile`) preloaded with
 --- `lines`. Returns the bufnr. Caller is responsible for `nvim_buf_delete`.
@@ -266,4 +268,177 @@ describe('widen_for_editui', function()
         end)
     end)
 
+end)
+
+describe('effective_range_after_widen', function()
+    it('returns the block range unchanged for non-degenerate blocks', function()
+        local b = scratch{ 'a', 'b', 'c' }
+        local r = effective_range_after_widen(b, block{
+            kind = 'replace_range', start_line = 1, end_line = 2,
+            replace_lines = { 'X', 'Y' },
+        })
+        assert.is.equal(1, r.start_line)
+        assert.is.equal(2, r.end_line)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('reports the forward-borrow target for a mid-buffer insert', function()
+        local b = scratch{ 'a', 'b', 'c' }
+        local r = effective_range_after_widen(b, block{
+            kind = 'insert', start_line = 2, end_line = 1,
+            replace_lines = { 'X' },
+        })
+        -- Insert before line 2 → borrow line 2.
+        assert.is.equal(2, r.start_line)
+        assert.is.equal(2, r.end_line)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('reports the backward-borrow target for an EOF insert', function()
+        local b = scratch{ 'a', 'b', 'c' }
+        local r = effective_range_after_widen(b, block{
+            kind = 'insert', start_line = 4, end_line = 3,
+            replace_lines = { 'X' },
+        })
+        -- Insert after last line → borrow line 3.
+        assert.is.equal(3, r.start_line)
+        assert.is.equal(3, r.end_line)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('reports the forward-borrow target for a mid-buffer delete', function()
+        local b = scratch{ 'a', 'b', 'c', 'd' }
+        local r = effective_range_after_widen(b, block{
+            kind = 'delete_range', start_line = 2, end_line = 3,
+            replace_lines = {},
+        })
+        -- Delete lines 2-3 → borrow line 4 → range {2, 4}.
+        assert.is.equal(2, r.start_line)
+        assert.is.equal(4, r.end_line)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('reports the backward-borrow target for a delete-to-EOF', function()
+        local b = scratch{ 'a', 'b', 'c' }
+        local r = effective_range_after_widen(b, block{
+            kind = 'delete_range', start_line = 3, end_line = 3,
+            replace_lines = {},
+        })
+        -- Delete last line → borrow line 2 → range {2, 3}.
+        assert.is.equal(2, r.start_line)
+        assert.is.equal(3, r.end_line)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('returns nil for whole-file delete', function()
+        local b = scratch{ 'a', 'b' }
+        local r = effective_range_after_widen(b, block{
+            kind = 'delete_range', start_line = 1, end_line = 2,
+            replace_lines = {},
+        })
+        assert.is.equal(nil, r)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+end)
+
+describe('detect_widen_collisions', function()
+    --- Build a block list from a compact spec list `{ { kind, s, e, replace? }, ... }`.
+    --- op_index defaults to position; block_id is "opN_r1".
+    local function blocks_from(specs)
+        local out = {}
+        for i, s in ipairs(specs) do
+            out[i] = {
+                block_id      = ('op%d_r1'):format(i),
+                op_index      = s.op_index or i,
+                kind          = s.kind,
+                range         = { start_line = s.s, end_line = s.e },
+                replace_lines = s.replace or {},
+            }
+        end
+        return out
+    end
+
+    it('returns an empty list for a single block (no peers)', function()
+        local b = scratch{ 'a', 'b', 'c' }
+        local fails = detect_widen_collisions(b, blocks_from{
+            { kind = 'replace_range', s = 2, e = 2, replace = { 'X' } },
+        })
+        assert.is.equal(0, #fails)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('returns an empty list for non-overlapping blocks', function()
+        local b = scratch{ 'a', 'b', 'c', 'd', 'e' }
+        local fails = detect_widen_collisions(b, blocks_from{
+            { kind = 'replace_range', s = 1, e = 1, replace = { 'X' } },
+            { kind = 'replace_range', s = 4, e = 4, replace = { 'Y' } },
+        })
+        assert.is.equal(0, #fails)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('detects the canonical delete-to-EOF + adjacent replace conflict', function()
+        -- This is the failure mode the regression test fixes. Op 1 replaces
+        -- line 2; op 2 deletes line 3 (last). Op 2 widens to {2, 3}, overlapping
+        -- op 1's {2, 2}. Both ops must be reported.
+        local b = scratch{ 'a', 'b', 'c' }
+        local fails = detect_widen_collisions(b, blocks_from{
+            { kind = 'replace_range', s = 2, e = 2, replace = { 'B-NEW' } },
+            { kind = 'delete_range',  s = 3, e = 3, replace = {} },
+        })
+        assert.is.equal(2, #fails)
+        -- Order is by block list order: op 1 first, op 2 second.
+        assert.is.equal(1,                fails[1].op_index)
+        assert.is.equal('range_conflict', fails[1].reason)
+        assert.is.equal(2,                fails[1].conflicting_op_indices[1])
+        assert.is.equal(2,                fails[2].op_index)
+        assert.is.equal('range_conflict', fails[2].reason)
+        assert.is.equal(1,                fails[2].conflicting_op_indices[1])
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('flags a whole-file delete as a self-conflict (nil effective range)', function()
+        -- Whole-file delete cannot widen — surfaced as range_conflict with
+        -- an empty conflicting_op_indices list.
+        local b = scratch{ 'only' }
+        local fails = detect_widen_collisions(b, blocks_from{
+            { kind = 'delete_range', s = 1, e = 1, replace = {} },
+        })
+        assert.is.equal(1, #fails)
+        assert.is.equal(1,                fails[1].op_index)
+        assert.is.equal('range_conflict', fails[1].reason)
+        assert.is.equal(0,                #fails[1].conflicting_op_indices)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('detects an insert-before + replace-adjacent conflict', function()
+        -- Op 1 inserts before line 2 → widens to {2, 2}.
+        -- Op 2 replaces line 2 → effective range {2, 2}.
+        -- Overlap; both flagged.
+        local b = scratch{ 'a', 'b', 'c' }
+        local fails = detect_widen_collisions(b, blocks_from{
+            { kind = 'insert',        s = 2, e = 1, replace = { 'X' } },
+            { kind = 'replace_range', s = 2, e = 2, replace = { 'B-NEW' } },
+        })
+        assert.is.equal(2, #fails)
+        assert.is.equal(1, fails[1].op_index)
+        assert.is.equal(2, fails[2].op_index)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
+
+    it('preserves the original (pre-widen) range in failure entries', function()
+        -- A failure entry's `range` should report what the LLM submitted,
+        -- not the widened range, so the LLM can correlate.
+        local b = scratch{ 'a', 'b', 'c' }
+        local fails = detect_widen_collisions(b, blocks_from{
+            { kind = 'replace_range', s = 2, e = 2, replace = { 'X' } },
+            { kind = 'delete_range',  s = 3, e = 3, replace = {} },
+        })
+        assert.is.equal(2, fails[1].range.start_line)
+        assert.is.equal(2, fails[1].range.end_line)
+        -- Op 2's original range is {3, 3}, not the widened {2, 3}.
+        assert.is.equal(3, fails[2].range.start_line)
+        assert.is.equal(3, fails[2].range.end_line)
+        vim.api.nvim_buf_delete(b, { force = true })
+    end)
 end)

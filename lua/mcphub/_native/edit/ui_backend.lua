@@ -155,6 +155,181 @@ local function widen_for_editui(bufnr, block)
     end
 end
 
+--- Compute the line range a block will occupy in the buffer **after**
+--- widening, without actually performing the widen. Used by
+--- `detect_widen_collisions` to find inter-block conflicts the planner
+--- could not have caught because they only exist post-widen.
+---
+--- Returns `nil` for blocks the helper would refuse outright (whole-file
+--- delete with no neighbour to borrow). Callers should treat `nil` as a
+--- collision-equivalent — the block cannot be expressed to EditUI.
+---
+--- @param bufnr integer
+--- @param block nvu.edit.applier.Block
+--- @return { start_line: integer, end_line: integer }?  Inclusive 1-based.
+local function effective_range_after_widen(bufnr, block)
+    local s, e = block.range.start_line, block.range.end_line
+    local replace_lines = block.replace_lines
+
+    local is_pure_insert = e < s
+    local is_pure_delete = #replace_lines == 0 and not is_pure_insert
+
+    if not is_pure_insert and not is_pure_delete then
+        -- No widening: range stays as-is.
+        return { start_line = s, end_line = e }
+    end
+
+    local total = vim.api.nvim_buf_line_count(bufnr)
+
+    if is_pure_insert then
+        if s <= total then
+            return { start_line = s, end_line = s }            -- borrow line s forward
+        elseif total >= 1 then
+            return { start_line = total, end_line = total }    -- borrow line total backward
+        else
+            return nil
+        end
+    end
+
+    -- is_pure_delete
+    if e < total then
+        return { start_line = s, end_line = e + 1 }            -- borrow line e+1 forward
+    elseif s > 1 then
+        return { start_line = s - 1, end_line = e }            -- borrow line s-1 backward
+    else
+        return nil
+    end
+end
+
+--- Detect inter-block range conflicts that the planner could not have
+--- caught because they only exist after `widen_for_editui` has run.
+---
+--- ## The conflict shape
+---
+--- Two blocks' **post-widen** effective ranges overlap. The planner saw
+--- the pre-widen ranges (which were non-overlapping by its own
+--- conflict-detection guarantee), so it had no chance to refuse the
+--- batch. EditUI's `_apply_all_changes` would then apply both blocks in
+--- whatever order Lua's non-stable `table.sort` picks for ties, with
+--- the later block clobbering the earlier one's changes. Result: silent
+--- wrong output and a dishonest `applied` response — the very failure
+--- mode the structured-anchor design exists to eliminate.
+---
+--- The refusal is at-file granularity, not at-batch: a batch with two
+--- files where only one has a collision still gets the other file
+--- processed. Each colliding op surfaces as `failed[]` with reason
+--- `range_conflict` and the conflicting op's index in
+--- `conflicting_op_indices` so the LLM can re-issue the batch in a way
+--- the applier can handle (e.g. split into two batches).
+---
+--- ## What counts as a collision
+---
+---   * Two effective ranges overlap on any line.
+---   * A block's effective range was `nil` (widening would have refused
+---     it — whole-file delete with no neighbour). Reported as a self-
+---     collision with `conflicting_op_indices = {}`.
+---
+--- @param bufnr  integer
+--- @param blocks nvu.edit.applier.Block[]
+--- @return table[]  failures   One entry per affected op (each side of every
+---                  detected conflict appears once). Empty list means no
+---                  collisions.
+local function detect_widen_collisions(bufnr, blocks)
+    -- Compute every block's post-widen effective range.
+    local ranges = {}
+    for i, b in ipairs(blocks) do
+        ranges[i] = effective_range_after_widen(bufnr, b)
+    end
+
+    -- For each block, find the set of other blocks whose effective range
+    -- overlaps. We track conflicts by block index, then translate to
+    -- op_index + block_id for the response.
+    --
+    -- Range A = [aS..aE], B = [bS..bE] overlap iff aS <= bE and bS <= aE.
+    -- For "nil range" (widening would refuse), treat as self-conflict.
+    local conflicts_by_block = {}  -- block-index → list of other block indices
+    for i = 1, #blocks do
+        conflicts_by_block[i] = {}
+    end
+
+    -- Collect block indices whose effective range is `nil` (whole-file
+    -- delete with no neighbour to borrow). We can't use `ipairs(ranges)`
+    -- here: `ipairs` stops at the first `nil`, but we specifically want
+    -- to find those nils. A numeric loop over `#blocks` is the correct
+    -- traversal of this sparse-by-design array.
+    local nil_blocks = {}
+    for i = 1, #blocks do
+        if ranges[i] == nil then nil_blocks[#nil_blocks + 1] = i end
+    end
+
+    for i = 1, #blocks do
+        if ranges[i] then
+            for j = i + 1, #blocks do
+                if ranges[j] then
+                    local ai, ae = ranges[i].start_line, ranges[i].end_line
+                    local bj, be = ranges[j].start_line, ranges[j].end_line
+                    if ai <= be and bj <= ae then
+                        conflicts_by_block[i][#conflicts_by_block[i] + 1] = j
+                        conflicts_by_block[j][#conflicts_by_block[j] + 1] = i
+                    end
+                end
+            end
+        end
+    end
+
+    -- Build failure entries. One per affected op, listing every other op
+    -- it collides with. Stable order: by block list order.
+    local failures = {}
+    for i, b in ipairs(blocks) do
+        local peers = conflicts_by_block[i]
+        if #peers > 0 then
+            local peer_op_indices = {}
+            for _, j in ipairs(peers) do
+                peer_op_indices[#peer_op_indices + 1] = blocks[j].op_index
+            end
+            failures[#failures + 1] = {
+                op_index = b.op_index,
+                reason   = 'range_conflict',
+                message  = string.format(
+                    'op %d cannot be applied in this batch: its effective range after '
+                    .. 'EditUI widening overlaps with op(s) %s. Re-issue the ops in '
+                    .. 'separate batches, or change the anchor of one to a non-adjacent '
+                    .. 'location.',
+                    b.op_index,
+                    table.concat(peer_op_indices, ', ')),
+                range = { start_line = b.range.start_line, end_line = b.range.end_line },
+                conflicting_op_indices = peer_op_indices,
+            }
+        end
+    end
+
+    -- Surface widening-refused blocks (nil range) as their own failures.
+    -- These don't have peers — they fail in isolation.
+    for _, i in ipairs(nil_blocks) do
+        local b = blocks[i]
+        local already_listed = false
+        for _, f in ipairs(failures) do
+            if f.op_index == b.op_index then already_listed = true; break end
+        end
+        if not already_listed then
+            failures[#failures + 1] = {
+                op_index = b.op_index,
+                reason   = 'range_conflict',
+                message  = string.format(
+                    'op %d cannot be applied by the EditUI driver: %s',
+                    b.op_index,
+                    (b.kind == 'delete_range')
+                        and 'whole-file deletion has no neighbouring line to borrow'
+                         or 'insertion into an empty buffer has no neighbouring line to borrow'),
+                range = { start_line = b.range.start_line, end_line = b.range.end_line },
+                conflicting_op_indices = {},
+            }
+        end
+    end
+
+    return failures
+end
+
 --- Build the `LocatedBlock`-shaped table `EditUI` expects, from one of the
 --- applier's `Block`s. `EditUI` needs:
 ---
@@ -278,31 +453,47 @@ end
 --- @param request  nvu.edit.applier.FileRequest
 --- @param file_cb  fun(outcome: nvu.edit.applier.FileOutcome)
 function M.drive_file(request, file_cb)
-    local EditUI = require'mcphub.native.neovim.files.edit_file.edit_ui'
+    -- Note: `EditUI` is required lazily below (just before instantiation),
+    -- not at function entry, so collision-detection and no-changes paths
+    -- can complete without mcphub's full plugin tree on `runtimepath`.
+    -- Useful for tests that exercise refusal semantics under `-u NONE`.
 
-    -- Convert applier blocks → EditUI LocatedBlocks. Also keep the parallel
-    -- block_id list for outcome aggregation.
-    --
-    -- Each block is first run through `widen_for_editui` to side-step
-    -- mcphub's `_generate_hunk_blocks` bug on zero-width / empty-replace
-    -- pairs. See that helper's docstring for the full rationale. The
-    -- whole-file-delete degenerate case (helper returns `nil`) is not
-    -- yet wired through a direct-apply fallback — it would require a
-    -- separate code path that bypasses `EditUI` entirely. Surfacing it
-    -- as an error keeps the contract well-defined until we hit it in
-    -- practice.
+    -- Refuse the batch up-front if any post-widen ranges would overlap.
+    -- Widening adapts our zero-width / empty-replace blocks to EditUI's
+    -- input shape by borrowing one neighbouring buffer line — that
+    -- borrowing can introduce conflicts the planner could not have seen
+    -- in the original (unwidened) ranges. Applying anyway would let
+    -- EditUI's `_apply_all_changes` sort the colliding blocks by
+    -- `start_line` (with ties resolved by Lua's non-stable sort), so
+    -- one block would clobber the other silently. We surface this as
+    -- a per-file `precondition_failed` outcome carrying one
+    -- `range_conflict` failure per affected op; the applier turns
+    -- those into `failed[]` response entries. The batch continues
+    -- with subsequent files.
+    do
+        local failures = detect_widen_collisions(request.bufnr, request.blocks)
+        if #failures > 0 then
+            return file_cb{
+                status     = 'precondition_failed',
+                failures   = failures,
+                per_block  = {},
+                ui_summary = string.format(
+                    'refused %d block(s) in `%s` due to post-widen range conflicts',
+                    #failures, request.file_path),
+            }
+        end
+    end
+
+    -- Collisions have been ruled out; widening is now safe per-block.
+    -- The previous nil-return guard for whole-file delete is no longer
+    -- reachable here (collision detection catches it upstream), but we
+    -- keep the assertion to lock in that invariant.
     local located_blocks, block_ids = {}, {}
     for _, b in ipairs(request.blocks) do
         local widened = widen_for_editui(request.bufnr, b)
-        if widened == nil then
-            return file_cb{
-                status        = 'cancelled',
-                cancel_reason = string.format(
-                    'block %s (op %d): whole-file delete is not supported by the EditUI driver',
-                    b.block_id, b.op_index or -1),
-                per_block     = {},
-            }
-        end
+        assert(widened ~= nil,
+            'drive_file: widen_for_editui returned nil for block ' .. b.block_id
+            .. ' after collision detection accepted the batch — invariant violated')
         located_blocks[#located_blocks + 1] = to_located_block(request.bufnr, widened)
         block_ids[#block_ids + 1] = b.block_id
     end
@@ -319,6 +510,11 @@ function M.drive_file(request, file_cb)
     -- picking a target split, so the CodeCompanion chat (buftype = "acwrite")
     -- is structurally excluded — see spelunking notes.
     local origin_winnr = vim.api.nvim_get_current_win()
+
+    -- Lazy require: we only need EditUI now that we're about to instantiate
+    -- one. The collision-detection and no-changes early-returns above
+    -- complete without touching mcphub's plugin tree.
+    local EditUI = require'mcphub.native.neovim.files.edit_file.edit_ui'
 
     -- `EditUI.new` deep-merges over its own DEFAULT_CONFIG, so an empty table
     -- is the correct way to say "use all defaults". mcphub's UIConfig
@@ -371,6 +567,10 @@ end
 --- borrowing edge cases (mid-buffer / EOF / whole-file) without needing to
 --- stand up `EditUI` itself. Not part of the module's public contract — any
 --- caller outside `tests/` reaching into this table is on their own.
-M._test = { widen_for_editui = widen_for_editui }
+M._test = {
+    widen_for_editui              = widen_for_editui,
+    effective_range_after_widen   = effective_range_after_widen,
+    detect_widen_collisions       = detect_widen_collisions,
+}
 
 return M

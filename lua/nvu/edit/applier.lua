@@ -74,10 +74,33 @@
 --- @field interactive      boolean
 
 --- Per-file outcome delivered by `drive_file` via its `file_cb`.
+---
+--- ## Statuses
+---
+---   * `'completed'` — `drive_file` ran the batch and `per_block` describes
+---     the per-block acceptance. Any blocks absent from `per_block` are
+---     treated as accepted.
+---   * `'cancelled'` — the user closed the editor partway. `per_block`
+---     may carry partial results; absent blocks are treated as cancelled
+---     (surfaced as `rejected[]` with `reason='cancelled'`). Subsequent
+---     files in the batch are not attempted.
+---   * `'no_changes'` — driver had nothing to apply (e.g. no blocks).
+---   * `'precondition_failed'` — the driver refused to run the batch
+---     because of a structural limitation that would otherwise produce
+---     a wrong result. `failures[]` describes the offending ops; every
+---     block in this file is surfaced as `failed[]`, no blocks are
+---     surfaced as `applied[]` or `rejected[]`. The batch continues
+---     with subsequent files (this is a per-file refusal, not a
+---     batch-level cancel).
+---
 --- @class nvu.edit.applier.FileOutcome
---- @field status        string          'completed' | 'cancelled' | 'no_changes'
+--- @field status        string          'completed' | 'cancelled' | 'no_changes' | 'precondition_failed'
 --- @field cancel_reason string?         Present on cancelled.
 --- @field per_block     table<string, string>?  block_id → 'accepted' | 'rejected' | 'partial' | 'skipped'.
+--- @field failures      table[]?        Present on precondition_failed. Each entry
+---                                       carries at minimum `{ op_index, reason, message }`
+---                                       and may carry reason-specific extras (e.g. `range`,
+---                                       `conflicting_op_indices`). Driver-supplied.
 --- @field ui_summary    string?         Free-form per-file summary for the LLM.
 
 local M = {}
@@ -355,16 +378,32 @@ function M.apply_plan(plan, opts, drive_file, on_done)
             outcome.status = outcome.status or 'completed'
             outcome.per_block = outcome.per_block or {}
 
-            local file_applied, file_rejected = classify_outcome(blocks, outcome, path)
-            for _, a in ipairs(file_applied)  do applied[#applied + 1]   = a end
-            for _, r in ipairs(file_rejected) do rejected[#rejected + 1] = r end
-
             files_summary[#files_summary + 1] = {
                 path          = path,
                 status        = outcome.status,
                 cancel_reason = outcome.cancel_reason,
                 ui_summary    = outcome.ui_summary,
             }
+
+            if outcome.status == 'precondition_failed' then
+                -- The driver refused to run this file's batch. Every block
+                -- in this file surfaces as `failed[]`; `applied[]` and
+                -- `rejected[]` get nothing. We forward `outcome.failures`
+                -- verbatim, with `path` filled in for any entry that
+                -- didn't carry it. The batch continues with subsequent
+                -- files — this is per-file, not a batch cancel.
+                for _, f in ipairs(outcome.failures or {}) do
+                    local entry = {}
+                    for k, v in pairs(f) do entry[k] = v end
+                    entry.path = entry.path or path
+                    failed[#failed + 1] = entry
+                end
+                return vim.schedule(step)
+            end
+
+            local file_applied, file_rejected = classify_outcome(blocks, outcome, path)
+            for _, a in ipairs(file_applied)  do applied[#applied + 1]   = a end
+            for _, r in ipairs(file_rejected) do rejected[#rejected + 1] = r end
 
             if outcome.status == 'cancelled' then
                 cancelled_batch = true
