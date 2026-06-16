@@ -10,7 +10,7 @@
 --- insertions, EOF-side deletions, and the degenerate empty-buffer /
 --- whole-file-delete cases that return `nil`.
 ---
---- @module "tests.edit.ui_backend_spec"
+--- @module "tests.mcphub._native.edit.ui_backend_spec"
 
 local ui_backend       = require'mcphub._native.edit.ui_backend'
 local widen_for_editui = ui_backend._test.widen_for_editui
