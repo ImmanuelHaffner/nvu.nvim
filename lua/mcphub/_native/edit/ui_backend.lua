@@ -400,6 +400,83 @@ local function to_located_block(bufnr, block)
     }
 end
 
+--- Default wait time (ms) for an LSP without a curated entry in
+--- `M.LSP_WAIT_MS`. 1000ms matches mcphub's historical default and is on
+--- the slow side of what most LSPs need — missing diagnostics is a
+--- correctness gap, over-waiting is just latency, so we err high.
+local DEFAULT_LSP_WAIT_MS = 1000
+
+--- Per-LSP wait-time ceilings for post-write diagnostic publication, in
+--- milliseconds. Each value is the **upper bound** on how long
+--- `drive_file` blocks waiting for `textDocument/publishDiagnostics`
+--- notifications to arrive after a `:write`. We pick the **max** over
+--- all clients attached to the buffer, so a buffer with both `tsserver`
+--- and `eslint` waits the longer of the two.
+---
+--- These are intentionally generous; ms-shaving belongs in a future
+--- debounce-with-event-driven-early-exit layer that respects each entry
+--- here as the ceiling. Until that layer lands, the value here *is* the
+--- wall-clock cost on every apply against a buffer attached to the
+--- named client.
+---
+--- ## How to override
+---
+--- Mutate this table after requiring the module — typically from your
+--- mcphub `add_tool` registration site:
+---
+---     local backend = require'mcphub._native.edit.ui_backend'
+---     backend.LSP_WAIT_MS.metals = 8000
+---
+--- Unknown clients fall back to `DEFAULT_LSP_WAIT_MS`. The table is
+--- module-level (not behind a `setup()` opts arg) by design: rolling
+--- out a `setup` API for one knob would be premature; once we have
+--- more configuration to expose, this folds in cleanly.
+---
+--- @type table<string, integer>
+M.LSP_WAIT_MS = {
+    -- Fast — small ASTs or aggressive incremental analysis.
+    lua_ls               = 300,
+    gopls                = 500,
+    pyright              = 600,
+    basedpyright         = 600,
+    pylance              = 600,
+    -- Medium.
+    tsserver             = 1000,
+    ['typescript-tools'] = 1000,
+    vtsls                = 1000,
+    eslint               = 1000,
+    clangd               = 1000,
+    -- Slow — heavy semantic passes, often multi-stage publication.
+    rust_analyzer        = 3000,
+    metals               = 5000,
+}
+
+--- Compute the wait-time ceiling for a buffer given its attached LSP
+--- clients. Pure function: takes a client list rather than calling
+--- `vim.lsp.get_clients` itself, so tests can drive it with synthetic
+--- client tables.
+---
+--- ## Resolution rule
+---
+---   * Empty client list → 0 ms (no LSP, no diagnostics to wait for).
+---   * Otherwise → the **maximum** of `wait_table[client.name]` (or
+---     `default_ms` when unknown) across all clients. A buffer with
+---     multiple LSPs waits long enough for every one of them.
+---
+--- @param clients    { name: string }[]   typically from `vim.lsp.get_clients`
+--- @param wait_table table<string, integer>
+--- @param default_ms integer
+--- @return integer
+local function resolve_lsp_wait_ms(clients, wait_table, default_ms)
+    if #clients == 0 then return 0 end
+    local max_wait = 0
+    for _, client in ipairs(clients) do
+        local wait = wait_table[client.name] or default_ms
+        if wait > max_wait then max_wait = wait end
+    end
+    return max_wait
+end
+
 --- Map a `vim.diagnostic.severity` integer enum to our stable
 --- lowercase string convention.
 ---
@@ -613,19 +690,22 @@ function M.drive_file(request, file_cb)
         -- the chat; the structured form lets the LLM cite line numbers,
         -- group by severity, or correlate against its own edits. Two
         -- views of the same data, each tailored to one consumer.
-        -- Wait for the LSP server to publish post-write diagnostics, but
-        -- only if there is an LSP client attached to this buffer. When
-        -- nothing is attached, `vim.diagnostic.get` returns immediately
-        -- and any wait is dead time — measurable in headless test runs,
-        -- and a sluggish "applied" round-trip for users editing untyped
-        -- files (markdown, plain text). 1000ms matches mcphub's default
-        -- and is conservative enough for slow language servers.
-        local has_lsp = next(vim.lsp.get_clients{ bufnr = bufnr_for_diagnostics }) ~= nil
+        -- Wait for the LSP server(s) to publish post-write diagnostics,
+        -- with the wait time selected per-LSP via `M.LSP_WAIT_MS`. When
+        -- the buffer has no LSP attached the resolver returns 0 — no
+        -- publisher exists, so the wait is dead time (felt as latency
+        -- in headless tests and on untyped-file edits). With multiple
+        -- LSPs attached the resolver picks the max so we hear from all
+        -- of them.
+        local lsp_wait_ms = resolve_lsp_wait_ms(
+            vim.lsp.get_clients{ bufnr = bufnr_for_diagnostics },
+            M.LSP_WAIT_MS,
+            DEFAULT_LSP_WAIT_MS)
         local summary_config = {
             include_session_summary = true,
             include_final_diff      = false,
             send_diagnostics        = true,
-            wait_for_diagnostics    = has_lsp and 1000 or 0,
+            wait_for_diagnostics    = lsp_wait_ms,
             diagnostic_severity     = vim.diagnostic.severity.WARN,
         }
         ui:get_summary(summary_config, function(summary_text)
@@ -670,6 +750,8 @@ M._test = {
     effective_range_after_widen   = effective_range_after_widen,
     detect_widen_collisions       = detect_widen_collisions,
     collect_diagnostics           = collect_diagnostics,
+    resolve_lsp_wait_ms           = resolve_lsp_wait_ms,
+    DEFAULT_LSP_WAIT_MS           = DEFAULT_LSP_WAIT_MS,
 }
 
 return M

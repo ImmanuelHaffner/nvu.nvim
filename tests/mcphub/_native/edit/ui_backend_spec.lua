@@ -17,6 +17,8 @@ local widen_for_editui            = ui_backend._test.widen_for_editui
 local effective_range_after_widen = ui_backend._test.effective_range_after_widen
 local detect_widen_collisions     = ui_backend._test.detect_widen_collisions
 local collect_diagnostics         = ui_backend._test.collect_diagnostics
+local resolve_lsp_wait_ms         = ui_backend._test.resolve_lsp_wait_ms
+local DEFAULT_LSP_WAIT_MS         = ui_backend._test.DEFAULT_LSP_WAIT_MS
 
 --- Create a scratch buffer (no file, `buftype = nofile`) preloaded with
 --- `lines`. Returns the bufnr. Caller is responsible for `nvim_buf_delete`.
@@ -577,5 +579,81 @@ describe('collect_diagnostics', function()
         vim.api.nvim_buf_delete(bufnr, { force = true })
         local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
         assert.is.equal(0, #out)
+    end)
+end)
+
+describe('resolve_lsp_wait_ms', function()
+    -- The resolver takes a client list directly (not a bufnr) so we can
+    -- exercise it without starting a real LSP. Each `client` only needs
+    -- a `name` field for resolution.
+
+    local TABLE = {
+        lua_ls           = 300,
+        tsserver         = 800,
+        rust_analyzer    = 3000,
+        metals           = 5000,
+    }
+    local DEFAULT = 1000
+
+    it('returns 0 when no clients are attached', function()
+        assert.is.equal(0, resolve_lsp_wait_ms({}, TABLE, DEFAULT))
+    end)
+
+    it('returns the table value for a single known client', function()
+        local clients = { { name = 'lua_ls' } }
+        assert.is.equal(300, resolve_lsp_wait_ms(clients, TABLE, DEFAULT))
+    end)
+
+    it('falls back to the default for unknown clients', function()
+        local clients = { { name = 'some_unknown_lsp' } }
+        assert.is.equal(DEFAULT, resolve_lsp_wait_ms(clients, TABLE, DEFAULT))
+    end)
+
+    it('returns the max across multiple clients (slow wins)', function()
+        -- tsserver=800, eslint=missing→1000(default), metals=5000 → max=5000.
+        local clients = {
+            { name = 'tsserver' },
+            { name = 'eslint' },
+            { name = 'metals' },
+        }
+        assert.is.equal(5000, resolve_lsp_wait_ms(clients, TABLE, DEFAULT))
+    end)
+
+    it('still picks the max when all clients are unknown', function()
+        local clients = {
+            { name = 'mystery_lsp_one' },
+            { name = 'mystery_lsp_two' },
+        }
+        assert.is.equal(DEFAULT, resolve_lsp_wait_ms(clients, TABLE, DEFAULT))
+    end)
+
+    it('handles a single very-slow client correctly', function()
+        local clients = { { name = 'metals' } }
+        assert.is.equal(5000, resolve_lsp_wait_ms(clients, TABLE, DEFAULT))
+    end)
+
+    it('respects the default parameter (not hardcoded)', function()
+        -- A different default flows through unchanged for unknown clients.
+        local clients = { { name = 'mystery' } }
+        assert.is.equal(2500, resolve_lsp_wait_ms(clients, TABLE, 2500))
+    end)
+end)
+
+describe('LSP_WAIT_MS table', function()
+    it('exposes the table as a public, mutable module field', function()
+        -- Verify the override surface documented in the helper: users can
+        -- mutate `M.LSP_WAIT_MS` after require to tune for their workflow.
+        local saved = ui_backend.LSP_WAIT_MS.lua_ls
+        ui_backend.LSP_WAIT_MS.lua_ls = 999
+        assert.is.equal(999, ui_backend.LSP_WAIT_MS.lua_ls)
+        ui_backend.LSP_WAIT_MS.lua_ls = saved
+    end)
+
+    it('exposes DEFAULT_LSP_WAIT_MS as a sensible non-zero default', function()
+        -- We don't want to pin the exact value (it may evolve), but it
+        -- must be positive — zero would mean "never wait" and silently
+        -- defeat the per-LSP table for unknown clients.
+        assert(DEFAULT_LSP_WAIT_MS > 0,
+            'DEFAULT_LSP_WAIT_MS must be positive, got ' .. tostring(DEFAULT_LSP_WAIT_MS))
     end)
 end)
