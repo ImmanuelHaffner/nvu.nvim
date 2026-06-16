@@ -16,6 +16,7 @@ local ui_backend                  = require'mcphub._native.edit.ui_backend'
 local widen_for_editui            = ui_backend._test.widen_for_editui
 local effective_range_after_widen = ui_backend._test.effective_range_after_widen
 local detect_widen_collisions     = ui_backend._test.detect_widen_collisions
+local collect_diagnostics         = ui_backend._test.collect_diagnostics
 
 --- Create a scratch buffer (no file, `buftype = nofile`) preloaded with
 --- `lines`. Returns the bufnr. Caller is responsible for `nvim_buf_delete`.
@@ -440,5 +441,141 @@ describe('detect_widen_collisions', function()
         assert.is.equal(3, fails[2].range.start_line)
         assert.is.equal(3, fails[2].range.end_line)
         vim.api.nvim_buf_delete(b, { force = true })
+    end)
+end)
+
+describe('collect_diagnostics', function()
+    --- Inject diagnostics into a scratch buffer via a dedicated namespace.
+    --- Returns the bufnr and a cleanup function. The namespace is per-call
+    --- so tests don't interfere; `vim.diagnostic.reset(ns, bufnr)` is the
+    --- correct cleanup hook even though `nvim_buf_delete` would also do it.
+    local function with_diagnostics(lines, diags)
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+        local ns = vim.api.nvim_create_namespace('nvu_edit_test_' .. tostring(bufnr))
+        vim.diagnostic.set(ns, bufnr, diags)
+        local function cleanup()
+            vim.diagnostic.reset(ns, bufnr)
+            vim.api.nvim_buf_delete(bufnr, { force = true })
+        end
+        return bufnr, cleanup
+    end
+
+    it('returns an empty array for a buffer with no diagnostics', function()
+        local bufnr, cleanup = with_diagnostics({ 'a', 'b' }, {})
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(0, #out)
+        cleanup()
+    end)
+
+    it('translates a single error to the canonical shape', function()
+        -- Inject one ERROR on line 1, cols 0-3 (0-based).
+        -- Expected output: 1-based positions, severity='error'.
+        local bufnr, cleanup = with_diagnostics({ 'abc def', 'ghi' }, {
+            { lnum = 0, col = 0, end_lnum = 0, end_col = 3,
+              severity = vim.diagnostic.severity.ERROR,
+              message  = 'undefined identifier',
+              source   = 'fake-lsp',
+              code     = 'undef' },
+        })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(1, #out)
+        local d = out[1]
+        assert.is.equal('error',                d.severity)
+        assert.is.equal(1,                      d.line)
+        assert.is.equal(1,                      d.end_line)
+        assert.is.equal(1,                      d.col)        -- 0+1
+        assert.is.equal(4,                      d.end_col)    -- 3+1
+        assert.is.equal('undefined identifier', d.message)
+        assert.is.equal('fake-lsp',             d.source)
+        assert.is.equal('undef',                d.code)
+        cleanup()
+    end)
+
+    it('filters out diagnostics below the severity threshold', function()
+        -- Inject one of each severity. With min_severity=WARN, expect
+        -- error+warn only (INFO and HINT excluded).
+        local bufnr, cleanup = with_diagnostics({ 'a', 'b', 'c', 'd' }, {
+            { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
+              severity = vim.diagnostic.severity.ERROR, message = 'e' },
+            { lnum = 1, col = 0, end_lnum = 1, end_col = 1,
+              severity = vim.diagnostic.severity.WARN,  message = 'w' },
+            { lnum = 2, col = 0, end_lnum = 2, end_col = 1,
+              severity = vim.diagnostic.severity.INFO,  message = 'i' },
+            { lnum = 3, col = 0, end_lnum = 3, end_col = 1,
+              severity = vim.diagnostic.severity.HINT,  message = 'h' },
+        })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(2, #out)
+        -- Order is the order vim.diagnostic.get returns them in; for a
+        -- single namespace that's insertion order.
+        assert.is.equal('error', out[1].severity)
+        assert.is.equal('warn',  out[2].severity)
+        cleanup()
+    end)
+
+    it('includes all severities when threshold is HINT', function()
+        local bufnr, cleanup = with_diagnostics({ 'a', 'b' }, {
+            { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
+              severity = vim.diagnostic.severity.INFO, message = 'i' },
+            { lnum = 1, col = 0, end_lnum = 1, end_col = 1,
+              severity = vim.diagnostic.severity.HINT, message = 'h' },
+        })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.HINT)
+        assert.is.equal(2, #out)
+        assert.is.equal('info', out[1].severity)
+        assert.is.equal('hint', out[2].severity)
+        cleanup()
+    end)
+
+    it('translates multi-line diagnostics with distinct end_line', function()
+        -- 0-based lnum=0..2 → 1-based line=1, end_line=3
+        local bufnr, cleanup = with_diagnostics({ 'a', 'b', 'c' }, {
+            { lnum = 0, col = 2, end_lnum = 2, end_col = 1,
+              severity = vim.diagnostic.severity.ERROR, message = 'spans' },
+        })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(1, #out)
+        assert.is.equal(1, out[1].line)
+        assert.is.equal(3, out[1].end_line)
+        assert.is.equal(3, out[1].col)
+        assert.is.equal(2, out[1].end_col)
+        cleanup()
+    end)
+
+    it('handles diagnostics with no end_lnum/end_col (defaults to start)', function()
+        -- Some LSP servers omit end_lnum/end_col. vim.diagnostic auto-fills
+        -- them to lnum/col, but we test our defaulting just in case the
+        -- shape changes upstream.
+        local bufnr, cleanup = with_diagnostics({ 'abc' }, {
+            { lnum = 0, col = 1, end_lnum = 0, end_col = 1,
+              severity = vim.diagnostic.severity.WARN, message = 'point' },
+        })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(1, #out)
+        assert.is.equal(1, out[1].line)
+        assert.is.equal(1, out[1].end_line)
+        assert.is.equal(2, out[1].col)
+        assert.is.equal(2, out[1].end_col)
+        cleanup()
+    end)
+
+    it('handles diagnostics with missing source / code', function()
+        local bufnr, cleanup = with_diagnostics({ 'a' }, {
+            { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
+              severity = vim.diagnostic.severity.ERROR, message = 'bare' },
+        })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(1, #out)
+        assert.is.equal(nil, out[1].source)
+        assert.is.equal(nil, out[1].code)
+        cleanup()
+    end)
+
+    it('returns an empty array when the buffer is invalid', function()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
+        assert.is.equal(0, #out)
     end)
 end)

@@ -102,6 +102,29 @@
 ---                                       and may carry reason-specific extras (e.g. `range`,
 ---                                       `conflicting_op_indices`). Driver-supplied.
 --- @field ui_summary    string?         Free-form per-file summary for the LLM.
+--- @field diagnostics   nvu.edit.Diagnostic[]?  Structured LSP diagnostics for this
+---                                       file's buffer at completion time. Driver-
+---                                       supplied; absent means "not collected". An
+---                                       empty array means "collected, nothing to
+---                                       report". See `nvu.edit.Diagnostic` below.
+---
+--- A single LSP-style diagnostic, normalised for LLM consumption.
+---
+--- The shape is intentionally a strict subset of `vim.diagnostic.Diagnostic`,
+--- with positions translated from Neovim's 0-based to our project-wide
+--- 1-based convention and severity rendered as a stable lowercase string
+--- rather than the integer enum. Driver-supplied: the applier never
+--- introspects these.
+---
+--- @class nvu.edit.Diagnostic
+--- @field severity 'error' | 'warn' | 'info' | 'hint'
+--- @field line     integer   1-based start line
+--- @field end_line integer   1-based end line (== line for single-line diagnostics)
+--- @field col      integer   1-based start column
+--- @field end_col  integer   1-based end column
+--- @field message  string
+--- @field source   string?   e.g. "Lua Diagnostics."
+--- @field code     (string|integer)?  e.g. "missing-fields"
 
 local M = {}
 
@@ -383,6 +406,12 @@ function M.apply_plan(plan, opts, drive_file, on_done)
                 status        = outcome.status,
                 cancel_reason = outcome.cancel_reason,
                 ui_summary    = outcome.ui_summary,
+                -- Always emit `diagnostics` as a table (possibly empty) rather
+                -- than nil. JSON-encoders distinguish `[]` from absent only
+                -- via explicit `vim.json.array` markers; defaulting to `{}`
+                -- here keeps the wire shape stable. A driver that doesn't
+                -- collect diagnostics still produces `[]`, not `null`.
+                diagnostics   = outcome.diagnostics or {},
             }
 
             if outcome.status == 'precondition_failed' then

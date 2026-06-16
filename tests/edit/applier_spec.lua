@@ -344,6 +344,68 @@ describe('apply_plan with synthetic drivers', function()
         end)
     end)
 
+    describe('files[].diagnostics forwarding', function()
+        it('forwards driver-supplied diagnostics into files[].diagnostics', function()
+            -- A custom driver that returns a fixed Diagnostic[] array. The
+            -- applier should forward verbatim — it never introspects the
+            -- shape.
+            local path, bufnr, fp = fixture_file({ 'x' }, '_diag_fwd.txt')
+            local driver = function(request, file_cb)
+                vim.schedule(function()
+                    file_cb{
+                        status      = 'completed',
+                        per_block   = { op1_r1 = 'accepted' },
+                        diagnostics = {
+                            { severity = 'error', line = 1, end_line = 1,
+                              col = 1, end_col = 4, message = 'mock',
+                              source = 'test', code = 'mocked' },
+                            { severity = 'warn', line = 1, end_line = 1,
+                              col = 1, end_col = 2, message = 'also mock' },
+                        },
+                    }
+                end)
+            end
+
+            local response = run({
+                ops = {
+                    { kind = 'replace_range', path = path, baseline_fingerprint = fp,
+                      anchor = { by = 'line_range', start = 1, ['end'] = 1 },
+                      content = 'X' },
+                },
+            }, driver)
+
+            assert.is.equal(1, #response.files)
+            local diags = response.files[1].diagnostics
+            assert(diags ~= nil, 'expected diagnostics field on files[1]')
+            assert.is.equal(2,       #diags)
+            assert.is.equal('error', diags[1].severity)
+            assert.is.equal('mock',  diags[1].message)
+            assert.is.equal('warn',  diags[2].severity)
+
+            cleanup_fixture(path, bufnr)
+        end)
+
+        it('defaults diagnostics to an empty array when the driver omits it', function()
+            -- accept_all does not emit diagnostics. The applier must still
+            -- produce an empty array so the wire shape is `[]` not `null`.
+            local path, bufnr, fp = fixture_file({ 'a' }, '_diag_empty.txt')
+            local response = run({
+                ops = {
+                    { kind = 'replace_range', path = path, baseline_fingerprint = fp,
+                      anchor = { by = 'line_range', start = 1, ['end'] = 1 },
+                      content = 'A' },
+                },
+            }, drivers.accept_all)
+
+            assert.is.equal(1, #response.files)
+            local diags = response.files[1].diagnostics
+            assert(diags ~= nil, 'expected diagnostics field to be an empty array, got nil')
+            assert.is.equal(0, #diags)
+
+            cleanup_fixture(path, bufnr)
+        end)
+    end)
+
     describe('precondition_failed', function()
         it('converts driver-supplied failures into the response failed[]', function()
             -- Custom driver returning precondition_failed. The applier should

@@ -400,6 +400,71 @@ local function to_located_block(bufnr, block)
     }
 end
 
+--- Map a `vim.diagnostic.severity` integer enum to our stable
+--- lowercase string convention.
+---
+--- The numeric enum (`ERROR=1, WARN=2, INFO=3, HINT=4`) is the canonical
+--- form inside Neovim, but it's an awkward shape on the wire — LLMs read
+--- "warn" more reliably than "2", and the integer mapping is a Neovim
+--- implementation detail the response shouldn't leak.
+local SEVERITY_NAME = {
+    [vim.diagnostic.severity.ERROR] = 'error',
+    [vim.diagnostic.severity.WARN]  = 'warn',
+    [vim.diagnostic.severity.INFO]  = 'info',
+    [vim.diagnostic.severity.HINT]  = 'hint',
+}
+
+--- Collect diagnostics from a buffer, filter by severity, and translate
+--- to our `nvu.edit.Diagnostic` shape.
+---
+--- ## When to call this
+---
+--- Call inside `EditUI:get_summary`'s callback. By the time the callback
+--- fires, mcphub has already deferred long enough for the LSP server's
+--- post-`:write` diagnostics to arrive (gated by the
+--- `wait_for_diagnostics` config we pass). Querying earlier would risk
+--- reading a stale set; querying later wastes time.
+---
+--- ## Position conventions
+---
+--- `vim.diagnostic.Diagnostic` uses 0-based positions exclusively. We
+--- translate every field to 1-based to match the rest of the response
+--- shape (line ranges in `applied[]` / `rejected[]` are 1-based
+--- inclusive everywhere).
+---
+--- ## Severity filter
+---
+--- `min_severity` is a `vim.diagnostic.severity` enum value. Diagnostics
+--- with a numerically lower-or-equal severity (i.e. equal-or-more-severe)
+--- are kept. Default `WARN` filters out `HINT` and `INFO`, which are
+--- typically too chatty for LLM consumption. To get everything, pass
+--- `vim.diagnostic.severity.HINT`.
+---
+--- @param bufnr        integer
+--- @param min_severity integer  vim.diagnostic.severity enum value
+--- @return nvu.edit.Diagnostic[]
+local function collect_diagnostics(bufnr, min_severity)
+    if not vim.api.nvim_buf_is_valid(bufnr) then return {} end
+
+    local all = vim.diagnostic.get(bufnr)
+    local out = {}
+    for _, d in ipairs(all) do
+        if d.severity <= min_severity then
+            out[#out + 1] = {
+                severity = SEVERITY_NAME[d.severity] or 'error',
+                line     = (d.lnum or 0) + 1,
+                end_line = (d.end_lnum or d.lnum or 0) + 1,
+                col      = (d.col or 0) + 1,
+                end_col  = (d.end_col or d.col or 0) + 1,
+                message  = d.message or '',
+                source   = d.source,
+                code     = d.code,
+            }
+        end
+    end
+    return out
+end
+
 --- Walk `EditUI.state.completed_hunks` and aggregate hunk-level statuses up
 --- to the block level (`per_block[block_id]`). `EditUI` generates hunk IDs
 --- of the form `<block_id>_hunk_<N>`, so we scan by prefix.
@@ -525,28 +590,61 @@ function M.drive_file(request, file_cb)
 
     -- Both completion paths share the same epilogue: snapshot state, fetch
     -- summary (async), cleanup, hand outcome to file_cb. We must read
-    -- `ui.state.completed_hunks` BEFORE `ui:cleanup()` because cleanup nils
-    -- the state table.
+    -- everything from `ui.state` BEFORE `ui:cleanup()` because cleanup nils
+    -- the state table. The diagnostic snapshot is keyed off `request.bufnr`
+    -- (== `ui.state.bufnr`) for the same reason — accessing it later via
+    -- `ui.state` would crash.
+    local bufnr_for_diagnostics = request.bufnr
+
     local function finalise(status, cancel_reason)
         local completed_hunks = vim.deepcopy(ui.state and ui.state.completed_hunks or {})
         local per_block = aggregate_per_block(completed_hunks, block_ids)
 
-        -- `get_summary` is async (it may wait for diagnostics). We disable
-        -- diagnostic plumbing here — wiring it up is a later concern. The
-        -- summary is still informative without it.
+        -- `get_summary` waits up to `wait_for_diagnostics` ms after the
+        -- (possible) write before invoking our callback. We enable
+        -- `send_diagnostics = true` so mcphub honours that wait (and
+        -- appends a human-readable diagnostic block to the summary
+        -- string for users reading the chat). Once the callback fires,
+        -- we collect the same diagnostics ourselves into the structured
+        -- `Diagnostic[]` shape that the LLM consumes via
+        -- `files[].diagnostics`.
+        --
+        -- Why both: the prose form in `ui_summary` is for humans skimming
+        -- the chat; the structured form lets the LLM cite line numbers,
+        -- group by severity, or correlate against its own edits. Two
+        -- views of the same data, each tailored to one consumer.
+        -- Wait for the LSP server to publish post-write diagnostics, but
+        -- only if there is an LSP client attached to this buffer. When
+        -- nothing is attached, `vim.diagnostic.get` returns immediately
+        -- and any wait is dead time — measurable in headless test runs,
+        -- and a sluggish "applied" round-trip for users editing untyped
+        -- files (markdown, plain text). 1000ms matches mcphub's default
+        -- and is conservative enough for slow language servers.
+        local has_lsp = next(vim.lsp.get_clients{ bufnr = bufnr_for_diagnostics }) ~= nil
         local summary_config = {
             include_session_summary = true,
             include_final_diff      = false,
-            send_diagnostics        = false,
-            wait_for_diagnostics    = 0,
+            send_diagnostics        = true,
+            wait_for_diagnostics    = has_lsp and 1000 or 0,
+            diagnostic_severity     = vim.diagnostic.severity.WARN,
         }
         ui:get_summary(summary_config, function(summary_text)
+            -- Snapshot diagnostics BEFORE cleanup. `cleanup()` may detach
+            -- the buffer from view; `vim.diagnostic.get` still works on
+            -- the bufnr, but reading before cleanup keeps the temporal
+            -- order obvious and avoids surprises if mcphub ever clears
+            -- diagnostic state in `cleanup`.
+            local diagnostics = collect_diagnostics(
+                bufnr_for_diagnostics,
+                summary_config.diagnostic_severity)
+
             ui:cleanup()
             file_cb{
                 status        = status,
                 cancel_reason = cancel_reason,
                 per_block     = per_block,
                 ui_summary    = summary_text ~= '' and summary_text or nil,
+                diagnostics   = diagnostics,
             }
         end)
     end
@@ -571,6 +669,7 @@ M._test = {
     widen_for_editui              = widen_for_editui,
     effective_range_after_widen   = effective_range_after_widen,
     detect_widen_collisions       = detect_widen_collisions,
+    collect_diagnostics           = collect_diagnostics,
 }
 
 return M
