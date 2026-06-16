@@ -31,8 +31,8 @@
 --- and "closing line" the way a function or a block has. We resolve
 --- `inside` on `line_range` to the inner edges anyway, by the same
 --- formula as any other base: `at: start` → `{S + 1, S}`, `at: end` →
---- `{E, E - 1}`. The redundancy is deliberate (see plan doc §M2): it
---- keeps `inside` uniformly available across base anchors, and authors
+--- `{E, E - 1}`. The redundancy is deliberate: it keeps `inside`
+--- uniformly available across base anchors, and authors
 --- who want true block-interior semantics can use the treesitter anchor
 --- (v2).
 ---
