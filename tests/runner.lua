@@ -36,9 +36,10 @@ local function colour(code, s)
     return '\27[' .. code .. 'm' .. s .. '\27[0m'
 end
 
-local function green(s) return colour('32', s) end
-local function red(s)   return colour('31', s) end
-local function dim(s)   return colour('2',  s) end
+local function green(s)  return colour('32', s) end
+local function red(s)    return colour('31', s) end
+local function yellow(s) return colour('33', s) end
+local function dim(s)    return colour('2',  s) end
 
 --------------------------------------------------------------------------------
 -- Test-state tracking
@@ -81,6 +82,41 @@ local function it(name, body)
     local full = current_name(name)
     local ok, err = pcall(body)
     table.insert(state.results, { name = full, ok = ok, err = err })
+end
+
+--- Register a test as pending — known-not-implemented or known-broken.
+---
+--- Pending tests do **not** execute their body (if provided), do **not**
+--- count toward pass/fail totals, and are reported in yellow with their
+--- reason. They exist to pin known issues as executable documentation: a
+--- regression test written before its fix lands keeps the symptom
+--- visible without breaking the suite.
+---
+--- Style mirrors busted's `pending`. Calling shapes accepted:
+---
+---     pending('name', 'reason')         -- common: stub a test by name+reason
+---     pending('name', function() ... end, 'reason')  -- carry a body for later
+---     pending('reason')                 -- from inside an `it` body to mark
+---                                          a test as pending mid-execution
+---
+--- Bodies are stored but never invoked — flipping `pending` to `it` is the
+--- one-character edit that activates them when the underlying fix lands.
+local function pending(name_or_reason, body_or_reason, reason)
+    -- Disambiguate the three calling shapes.
+    local full, why
+    if type(body_or_reason) == 'function' then
+        full = current_name(name_or_reason)
+        why = reason or 'pending'
+    elseif body_or_reason ~= nil then
+        full = current_name(name_or_reason)
+        why = body_or_reason
+    else
+        -- Single-arg form: reason only (typically called from inside an it body).
+        -- We have no name in that case, so use the reason as the name.
+        full = current_name(name_or_reason)
+        why = name_or_reason
+    end
+    table.insert(state.results, { name = full, pending = true, reason = why })
 end
 
 --------------------------------------------------------------------------------
@@ -206,12 +242,14 @@ end
 local function install_globals()
     _G.describe = describe
     _G.it = it
+    _G.pending = pending
     _G.assert = nvu_assert
 end
 
 local function uninstall_globals()
     _G.describe = nil
     _G.it = nil
+    _G.pending = nil
     -- We do NOT restore Lua's stdlib `assert`; spec files don't expect it
     -- after our harness has run. The headless process exits anyway.
 end
@@ -265,10 +303,15 @@ end
 --------------------------------------------------------------------------------
 
 function M.report(scope)
-    local passed = 0
-    local failed = 0
+    local passed, failed, pending_count = 0, 0, 0
     for _, r in ipairs(state.results) do
-        if r.ok then
+        if r.pending then
+            pending_count = pending_count + 1
+            print(yellow('  PEND') .. ' ' .. r.name)
+            if r.reason and r.reason ~= r.name then
+                print(dim('      ' .. r.reason))
+            end
+        elseif r.ok then
             passed = passed + 1
             print(green('  ok  ') .. r.name)
         else
@@ -280,11 +323,13 @@ function M.report(scope)
         end
     end
     print('')
-    print(string.format('%s — %d passed, %d failed (%d total)',
-        scope,
-        passed,
-        failed,
-        passed + failed))
+    if pending_count > 0 then
+        print(string.format('%s — %d passed, %d failed, %d pending (%d total)',
+            scope, passed, failed, pending_count, passed + failed + pending_count))
+    else
+        print(string.format('%s — %d passed, %d failed (%d total)',
+            scope, passed, failed, passed + failed))
+    end
     if failed > 0 then
         -- Use Neovim's `cq` to exit with code 1: `os.exit()` from inside Lua
         -- under `--headless` is ignored by the host loop.
