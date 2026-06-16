@@ -790,7 +790,6 @@ end
 --- @field ops         table[]                Typed op records.
 --- @field contents    table<string, string>  Resolved sidecar.
 --- @field dry_run     boolean
---- @field description string|nil
 --- @field warnings    table[]                Non-fatal warnings (e.g. unused content labels).
 
 --- Validate and parse an incoming request body.
@@ -825,7 +824,7 @@ function M.validate(input, opts)
             {
                 expected = 'object',
                 got = json_type_of(input),
-                hint = 'the top-level value is `{ ops: [...] }`, optionally with `contents`, `dry_run`, `description`',
+                hint = 'the top-level value is `{ ops: [...] }`, optionally with `contents` and `dry_run`',
             }))
         return false, errors
     end
@@ -874,16 +873,6 @@ function M.validate(input, opts)
                 hint = '`dry_run: true` plans and previews without writing; omit or set false to apply',
             }))
     end
-    if input.description ~= nil and type(input.description) ~= 'string' then
-        table.insert(errors, err('description', M.ERROR_REASONS.wrong_type,
-            '`description` must be a string',
-            {
-                expected = 'string',
-                got = json_type_of(input.description),
-                hint = '`description` is a one-line summary shown in the user-facing review UI',
-            }))
-    end
-
     -- Validate every op. `op_index` is 1-based Lua-native; the JSON `path`
     -- field inside each error record uses 0-based form (`ops[0]`, `ops[1]`,
     -- ...) — that translation happens inside `validate_op`.
@@ -912,7 +901,6 @@ function M.validate(input, opts)
         ops = parsed_ops,
         contents = contents,
         dry_run = input.dry_run == true,
-        description = input.description,
         warnings = warnings,
     }
 end

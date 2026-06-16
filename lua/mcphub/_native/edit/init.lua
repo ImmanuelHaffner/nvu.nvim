@@ -292,7 +292,6 @@ local input_schema = {
             additionalProperties = { type = 'string' },
         },
         dry_run     = { type = 'boolean' },
-        description = { type = 'string' },
     },
     required = { 'ops' },
     additionalProperties = false,

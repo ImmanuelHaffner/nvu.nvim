@@ -72,14 +72,6 @@ describe('nvu.edit.schema', function()
             assert_error(errors, 'dry_run', schema.ERROR_REASONS.wrong_type)
         end)
 
-        it('rejects a non-string `description`', function()
-            local ok, errors = helpers.validate{
-                ops = { { kind = 'delete_range', path = 'f', anchor = { by = 'line_range', start = 1, ['end'] = 1 } } },
-                description = 42,
-            }
-            assert.is_false(ok)
-            assert_error(errors, 'description', schema.ERROR_REASONS.wrong_type)
-        end)
     end)
 
     ----------------------------------------------------------------
@@ -484,7 +476,6 @@ describe('nvu.edit.schema', function()
     describe('happy path: full request shape', function()
         it('parses a multi-op batch with inline and ref content', function()
             local ok, parsed = helpers.validate{
-                description = 'rename and helper',
                 dry_run = false,
                 ops = {
                     { kind = 'replace_range', path = 'lua/foo.lua',
@@ -502,7 +493,6 @@ describe('nvu.edit.schema', function()
             }
             assert.is_true(ok)
             assert.is.equal(3, #parsed.ops)
-            assert.is.equal('rename and helper', parsed.description)
             assert.is_false(parsed.dry_run)
             assert.is.equal('preserve', parsed.ops[2].indent)
             assert.is.equal('all', parsed.ops[3].anchor.occurrence)
