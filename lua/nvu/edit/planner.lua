@@ -22,7 +22,7 @@
 ---
 --- where each `LocatedOp` is:
 ---   {
----     op_index = 0-based integer,
+---     op_index = 1-based integer (Lua-native; matches parsed_input.ops[op_index]),
 ---     kind     = 'replace_range' | 'insert' | 'delete_range',
 ---     path     = absolute path (matches a key in records),
 ---     range    = { start_line, end_line }            -- single-range case
