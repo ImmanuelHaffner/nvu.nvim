@@ -689,19 +689,35 @@ local function validate_op(op, op_index, contents, used_labels, errors, warnings
 
     -- replace_range / insert: content + indent.
 
-    -- `occurrence: "all"` on replace_range would broadcast one content value
-    -- across multiple distinct ranges with no way to verify each landing site.
-    -- Express bulk replacement as one op per occurrence.
-    if kind == 'replace_range' and anchor.by == 'unique_text' and anchor.occurrence == 'all' then
-        table.insert(errors, err(op_path .. '.anchor.occurrence', M.ERROR_REASONS.occurrence_all_disallowed,
+    -- `occurrence: "all"` produces a multi-range result. The only op that
+    -- has well-defined semantics on multi-range is `delete_range` — for
+    -- everything else, broadcasting one piece of content (replace_range)
+    -- or one zero-width position (insert via a modifier) across multiple
+    -- distinct sites would force one of: silently picking a site, or
+    -- crashing at apply time. We reject at the schema layer instead.
+    --
+    -- The `occurrence` field lives on the **base** anchor — either
+    -- `anchor` directly (for `replace_range` with `unique_text`) or
+    -- `anchor.of` (for `insert` with a modifier wrapping `unique_text`).
+    -- We check both shapes.
+    local base_for_occurrence = anchor.of or anchor
+    if kind ~= 'delete_range'
+       and base_for_occurrence.by == 'unique_text'
+       and base_for_occurrence.occurrence == 'all' then
+        local error_path = anchor.of and (op_path .. '.anchor.of.occurrence')
+                                     or  (op_path .. '.anchor.occurrence')
+        table.insert(errors, err(error_path, M.ERROR_REASONS.occurrence_all_disallowed,
             '`occurrence: "all"` is valid only on `delete_range`',
             {
                 expected = 'omit, or use { nth: N }',
                 got = '"all"',
                 op_index = op_index,
-                hint = 'broadcasting one replacement across multiple matches is ambiguous; '
-                    .. 'emit one replace_range op per occurrence (each with its own `occurrence.nth`), '
-                    .. 'or, if you genuinely want to remove all matches, use kind: "delete_range"',
+                hint = kind == 'replace_range'
+                    and 'broadcasting one replacement across multiple matches is ambiguous; '
+                        .. 'emit one replace_range op per occurrence (each with its own `occurrence.nth`), '
+                        .. 'or, if you genuinely want to remove all matches, use kind: "delete_range"'
+                    or  'inserting at multiple positions in one op is undefined; '
+                        .. 'emit one insert op per intended position (each with its own `occurrence.nth`)',
             }))
         return nil
     end

@@ -232,6 +232,42 @@ describe('nvu.edit.schema', function()
                 schema.ERROR_REASONS.occurrence_all_disallowed)
         end)
 
+        it('rejects unique_text with occurrence="all" wrapped by a modifier on insert', function()
+            -- The schema previously accepted this combination because its
+            -- `occurrence_all_disallowed` check only looked at the top-level
+            -- anchor, not the `.of` base inside a modifier. The planner then
+            -- crashed at apply time with a defence-in-depth assert in
+            -- modifier.lua. We now reject at the schema layer.
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'insert', path = 'f',
+                    anchor = {
+                        by = 'before',
+                        of = { by = 'unique_text', text = 'foo', occurrence = 'all' },
+                    },
+                    content = 'x' } }
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].anchor.of.occurrence',
+                schema.ERROR_REASONS.occurrence_all_disallowed)
+        end)
+
+        it('accepts unique_text with occurrence="all" wrapped by a modifier on delete_range', function()
+            -- Sanity: delete_range still accepts the multi-range combination
+            -- even through a modifier. This isn't a particularly useful
+            -- combination (modifier on a multi-range delete-by-text is
+            -- equivalent to just deleting each match), but the schema
+            -- should not reject it.
+            local ok, parsed = helpers.validate{
+                ops = { { kind = 'delete_range', path = 'f',
+                    anchor = {
+                        by = 'before',
+                        of = { by = 'unique_text', text = 'foo', occurrence = 'all' },
+                    } } }
+            }
+            assert.is_true(ok)
+            assert.is.equal('all', parsed.ops[1].anchor.of.occurrence)
+        end)
+
         it('rejects malformed occurrence', function()
             local ok, errors = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',

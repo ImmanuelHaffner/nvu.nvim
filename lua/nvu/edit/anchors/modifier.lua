@@ -134,11 +134,16 @@ function M.resolve(anchor, record)
     end
 
     -- The modifier expects a single resolved range, not a multi-range
-    -- `{ranges=...}` from occurrence: "all". The schema permits this
-    -- combination syntactically; we refuse semantically.
+    -- `{ranges=...}` from occurrence: "all". The schema refuses this
+    -- combination at validation time (see `occurrence_all_disallowed`
+    -- in schema.lua's per-op validator), so this assertion is a
+    -- defence-in-depth tripwire for direct callers that bypass the
+    -- schema layer — it should be unreachable from any LLM-facing
+    -- path.
     assert(result.start_line ~= nil and result.end_line ~= nil,
-        'modifier wrapping a multi-range base (occurrence: "all") is not supported in MVP — '
-        .. 'inserting at multiple positions in one op is undefined. Emit one op per intended position.')
+        'modifier wrapping a multi-range base (occurrence: "all") reached the resolver — '
+        .. 'schema validation should have refused this with `occurrence_all_disallowed`. '
+        .. 'If you hit this from a direct Lua call, route your input through schema.validate first.')
 
     return apply_modifier(by, anchor.at, result), nil
 end
