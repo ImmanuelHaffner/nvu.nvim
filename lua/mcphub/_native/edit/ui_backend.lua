@@ -336,8 +336,8 @@ function M.drive_file(request, file_cb)
         local per_block = aggregate_per_block(completed_hunks, block_ids)
 
         -- `get_summary` is async (it may wait for diagnostics). We disable
-        -- diagnostic plumbing here — that's a M4 concern. The summary is
-        -- still informative without it.
+        -- diagnostic plumbing here — wiring it up is a later concern. The
+        -- summary is still informative without it.
         local summary_config = {
             include_session_summary = true,
             include_final_diff      = false,
