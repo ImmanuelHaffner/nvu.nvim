@@ -432,33 +432,59 @@ if not ok_add_read then
 end
 
 --------------------------------------------------------------------------------
--- Notify listeners that the `neovim` server's tool list grew.
+-- Notify two distinct audiences that the `neovim` server's tool list grew.
 --
 -- `mcphub.add_tool` mutates the native server's `capabilities.tools` array
--- directly and does NOT fire any event. Downstream consumers — notably the
--- mcphub→CodeCompanion bridge — subscribe to `tool_list_changed` and only
--- then re-enumerate server tools. Without this nudge, our two new tools
--- live on the server but never surface in the chat tool list.
+-- directly and does NOT fire any event. Two downstream consumers need
+-- nudges on two separate buses:
 --
--- Important: this is *not* the same channel as `mcphub.utils.fire(...)`,
--- which dispatches `User` autocmds. CodeCompanion's bridge listens via
--- `mcphub.on(...)` → `State:add_event_listener`, so we must emit on the
--- in-process State bus. Don't "simplify" this to `mcphub.fire`.
+--   1. The mcphub→CodeCompanion bridge subscribes via `mcphub.on(...)` →
+--      `State:add_event_listener` and only re-enumerates tools on the
+--      `tool_list_changed` event. Without this emit, our two new tools
+--      live on the server but never surface in CodeCompanion's `@`-tool
+--      completion. This is *not* the same channel as `mcphub.utils.fire`,
+--      which dispatches `User` autocmds — CC's bridge doesn't listen
+--      there. Don't "simplify" to `mcphub.fire`.
 --
--- Wrapped in pcall: if mcphub's internals move (State becomes per-hub,
--- gets renamed, etc.) we degrade to a warning rather than break loading.
+--   2. The mcphub `:MCPHub` UI subscribes via `State:subscribe` on
+--      `{ "ui", "server", ... }` and re-renders when `State:notify_subscribers`
+--      reports a change to `server_state`. `State:update` would seem the
+--      natural choice, but it deep-equals the partial against the current
+--      state, and since `add_tool` already mutated the same table in-place,
+--      the deep-equal check returns "no change" and nothing fires.
+--      `notify_subscribers` is the public-shaped primitive `State:update`
+--      itself uses; calling it directly skips the false-negative guard.
 --
--- Only emit when at least one add_tool succeeded — emitting with no
--- capability change just triggers a no-op re-registration storm.
+-- Both nudges are wrapped in pcall: `mcphub.state` is internal API. If its
+-- layout changes (e.g. State becomes per-hub, methods get renamed) we
+-- degrade to a warning rather than break adapter loading.
+--
+-- Gated on at least one successful add_tool — emitting with no real
+-- capability change just triggers a no-op refresh storm.
 --------------------------------------------------------------------------------
 if ok_add or ok_add_read then
+    local State = require'mcphub.state'
+
+    -- (1) Wake the CodeCompanion bridge.
     local ok_emit, err_emit = pcall(function()
-        require'mcphub.state':emit('tool_list_changed', {})
+        State:emit('tool_list_changed', {})
     end)
     if not ok_emit then
         vim.notify(
             'mcphub._native.edit: registered tools but failed to fire tool_list_changed: '
             .. tostring(err_emit) .. ' (tools may not appear in CodeCompanion until next refresh)',
+            vim.log.levels.WARN
+        )
+    end
+
+    -- (2) Wake the `:MCPHub` UI's State:subscribe listeners.
+    local ok_notify, err_notify = pcall(function()
+        State:notify_subscribers({ server_state = true }, 'server')
+    end)
+    if not ok_notify then
+        vim.notify(
+            'mcphub._native.edit: registered tools but failed to notify UI subscribers: '
+            .. tostring(err_notify) .. ' (tools may not appear in :MCPHub until next refresh)',
             vim.log.levels.WARN
         )
     end
