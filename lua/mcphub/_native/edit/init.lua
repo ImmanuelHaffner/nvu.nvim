@@ -364,6 +364,15 @@ local read_input_schema = {
     type = 'object',
     properties = {
         path = { type = 'string', minLength = 1 },
+        -- Optional 1-based-inclusive range projection. The fingerprint is
+        -- ALWAYS computed over the whole file; these fields only restrict
+        -- the returned `content`. See `read_description` below for the
+        -- edge-case policy. Cross-field validation (start_line <= end_line,
+        -- start_line <= total_lines) lives in the engine, not here —
+        -- JSON Schema can't express it cleanly and the engine's
+        -- runtime check is authoritative.
+        start_line = { type = 'integer', minimum = 1 },
+        ['end_line'] = { type = 'integer', minimum = 1 },
     },
     required = { 'path' },
     additionalProperties = false,
@@ -377,12 +386,23 @@ op against this file. The planner re-computes the fingerprint at
 apply time and refuses the batch on mismatch (`stale_fingerprint`),
 closing the race where the file mutates between read and edit.
 
-This is the only read path that emits a fingerprint — and therefore
-the only read path you should use when planning to edit. Treat the
+This is the **canonical** read path for text files. Prefer it over
+`execute_command` + `sed`/`head`/`awk`/`cat` even for verification
+reads after an edit: those bypass the fingerprint binding and the
+buffer-first semantics, and route through the spill guard. Treat the
 fingerprint as opaque; do not parse or regenerate it.
 
-Returns: { status: "ok", path, content, baseline_fingerprint, n_lines }
-On error: { status: "failed", summary, failed: [{ reason, path, message, hint }] }
+Optional range projection: pass `start_line` and/or `end_line`
+(1-based, inclusive) to restrict the returned `content` to a slice
+of the file. Defaults: `start_line = 1`, `end_line = total_lines`.
+`end_line` past EOF clamps silently; `start_line` past EOF refuses
+with `start_after_eof` (your view of the file is stale). The
+`baseline_fingerprint` is always whole-file regardless of the range
+— do not assume a partial read pins only the part you read.
+
+Returns on success: { status: "ok", path, content, baseline_fingerprint,
+  start_line, end_line, returned_lines, total_lines }
+On error: { status: "failed", summary, failed: [{ reason, path, message, hint, ... }] }
 ]]
 
 --- @type MCPTool
@@ -392,7 +412,9 @@ local read_with_fingerprint_tool = {
     inputSchema = read_input_schema,
     handler = function(req, res)
         local params = req.params or {}
-        local response = edit_read.read_with_fingerprint(params.path)
+        local response = edit_read.read_with_fingerprint(
+            params.path,
+            { start_line = params.start_line, end_line = params.end_line })
         local ok_json, encoded = pcall(vim.json.encode, response)
         if not ok_json then
             return res:error('read_with_fingerprint: failed to encode response', { response = response })

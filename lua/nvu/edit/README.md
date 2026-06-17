@@ -77,7 +77,10 @@ which returns
   "path": "/tmp/example.txt",
   "content": "line 1\nline 2\nline 3\n",
   "baseline_fingerprint": "a1b2c3d",
-  "n_lines": 3
+  "start_line": 1,
+  "end_line": 3,
+  "returned_lines": 3,
+  "total_lines": 3
 }
 ```
 
@@ -488,6 +491,8 @@ for every sub-reason: fix the structural error and resubmit.
 | --------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `stale_fingerprint`   | The file changed between your read and your apply.         | The entry carries `live_fingerprint` (the current hash) and `live_content` (the current bytes). Re-plan against `live_content` and resubmit with `baseline_fingerprint = live_fingerprint`. |
 | `io_error`            | Could not load the file (path doesn't exist, not readable, etc.). | Verify the path. If you intended to create a new file, use `neovim__write_file` instead — `apply_edit` only modifies existing files. |
+| `invalid_range`       | `read_with_fingerprint` was called with `start_line > end_line` (both explicit). | Swap the values, or pick a single-line range with `start_line == end_line`. |
+| `start_after_eof`     | `read_with_fingerprint` was called with a `start_line` past the file's actual end. | The file is shorter than you assumed. Re-read without `start_line` first to learn `total_lines`. The entry carries `total_lines` for the recovery. |
 
 ### Inter-op conflicts
 
@@ -498,8 +503,14 @@ for every sub-reason: fix the structural error and resubmit.
 
 ## `neovim__read_with_fingerprint`
 
-The companion read tool. Returns file content along with a baseline
-fingerprint suitable for use in subsequent `apply_edit` calls.
+The companion read tool, and **the canonical path** for reading text
+files when an LLM may go on to edit them. Returns file content along
+with a baseline fingerprint suitable for use in subsequent `apply_edit`
+calls. Prefer this tool over `execute_command` + `sed` / `head` / `awk`
+/ `cat` even for verification reads after an edit — those bypass the
+fingerprint binding and the buffer-first semantics.
+
+### Basic read
 
 ```json
 { "path": "/abs/path/to/file" }
@@ -509,20 +520,71 @@ Returns:
 
 ```json
 {
+  "status": "ok",
   "path": "/abs/path/to/file",
   "content": "line 1\nline 2\n...",
   "baseline_fingerprint": "a1b2c3d",
-  "line_count": 42
+  "start_line": 1,
+  "end_line": 42,
+  "returned_lines": 42,
+  "total_lines": 42
 }
 ```
 
-This is the *only* read path that emits fingerprints. The library
-recommends — but does not enforce — that you also disable mcphub's
-generic `neovim__read_file` in your mcphub config when enabling
-`apply_edit`. Leaving both registered lets the LLM read without a
-fingerprint and then have its `apply_edit` calls refused for
-`stale_fingerprint` / missing baseline; disabling forces it through
-the fingerprint-emitting read path by construction.
+### Range projection
+
+Pass optional `start_line` and/or `end_line` (1-based, inclusive) to
+restrict the returned `content` to a slice of the file:
+
+```json
+{ "path": "/abs/path/to/file", "start_line": 100, "end_line": 150 }
+```
+
+The response carries the **echoed** range (clamped to file bounds), the
+number of lines actually returned, and the total file size:
+
+```json
+{
+  "status": "ok",
+  "path": "/abs/path/to/file",
+  "content": "...lines 100..150...",
+  "baseline_fingerprint": "a1b2c3d",
+  "start_line": 100,
+  "end_line": 150,
+  "returned_lines": 51,
+  "total_lines": 942
+}
+```
+
+Defaults: `start_line = 1`, `end_line = total_lines`. Either field may
+be omitted independently.
+
+**The fingerprint is always whole-file**, regardless of the range — it
+has to be, because `apply_edit` re-hashes the whole buffer at apply
+time; a partial-fingerprint would always mismatch. The range parameter
+is purely a content-projection knob on the response, not a way to
+"pin" a sub-region of the file independently from the rest.
+
+### Edge cases
+
+| Case                                       | Behaviour                                                                        |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| `end_line > total_lines`                   | Clamped silently to `total_lines`. The "read from line N to end" idiom.          |
+| `start_line > total_lines`                 | Refused with `start_after_eof`. Your view of the file's length is stale.         |
+| Both `start_line` and `end_line` explicit, with `start_line > end_line` | Refused with `invalid_range`. Malformed pair.       |
+| Only `start_line` explicit, exceeds the engine's `total_lines` default for `end_line` | Refused with `start_after_eof` (no LLM-side inversion to flag). |
+| Empty file                                 | Treated as one empty line (Neovim convention). `total_lines = 1`, `content = "\n"`. `start_line = 2` refuses with `start_after_eof`. |
+| `start_line` or `end_line` < 1             | Refused at schema-validation time with `out_of_range` (no I/O performed).        |
+| Either field non-integer                   | Refused with `wrong_type`.                                                       |
+
+### Coexistence policy
+
+The library recommends — but does not enforce — that you disable
+mcphub's generic `neovim__read_file` in your mcphub config when
+enabling `apply_edit`. Leaving both registered lets the LLM read
+without a fingerprint and then have its `apply_edit` calls refused
+for `stale_fingerprint` / missing baseline; disabling forces it
+through the fingerprint-emitting read path by construction.
 
 Always read with this tool before editing. The fingerprint is what
 makes the edit safe under concurrent modification.

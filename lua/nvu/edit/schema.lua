@@ -90,6 +90,10 @@ M.ERROR_REASONS = {
     range_conflict            = 'range_conflict',               -- two ops claim overlapping ranges in one file
     io_error                  = 'io_error',                     -- could not read the file
     stale_fingerprint         = 'stale_fingerprint',            -- op's `baseline_fingerprint` does not match current file fingerprint
+
+    -- read-side reasons (raised by nvu.edit.read).
+    invalid_range             = 'invalid_range',                -- start_line > end_line; a malformed range pair
+    start_after_eof           = 'start_after_eof',              -- start_line > total_lines; LLM assumed stale file state
 }
 
 M.WARNING_REASONS = {
