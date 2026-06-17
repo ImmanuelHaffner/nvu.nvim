@@ -302,8 +302,10 @@ local input_schema = {
 --------------------------------------------------------------------------------
 
 local tool_description = [[
-Apply a batch of structured edits to existing files. One call = one
-transaction: either every op lands or none do.
+Apply a batch of structured edits to existing files. Plan-phase
+failures are atomic — if any anchor fails to resolve, no buffer is
+touched. The user then reviews each hunk and may accept or reject
+individually; outcomes are reported per-op in `applied[]` / `rejected[]`.
 
 Each op selects a location with an `anchor` (by `line_range`,
 `unique_text`, or `before`/`after`/`inside` a base anchor) and either
