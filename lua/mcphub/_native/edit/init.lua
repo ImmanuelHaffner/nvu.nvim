@@ -431,6 +431,39 @@ if not ok_add_read then
     )
 end
 
+--------------------------------------------------------------------------------
+-- Notify listeners that the `neovim` server's tool list grew.
+--
+-- `mcphub.add_tool` mutates the native server's `capabilities.tools` array
+-- directly and does NOT fire any event. Downstream consumers — notably the
+-- mcphub→CodeCompanion bridge — subscribe to `tool_list_changed` and only
+-- then re-enumerate server tools. Without this nudge, our two new tools
+-- live on the server but never surface in the chat tool list.
+--
+-- Important: this is *not* the same channel as `mcphub.utils.fire(...)`,
+-- which dispatches `User` autocmds. CodeCompanion's bridge listens via
+-- `mcphub.on(...)` → `State:add_event_listener`, so we must emit on the
+-- in-process State bus. Don't "simplify" this to `mcphub.fire`.
+--
+-- Wrapped in pcall: if mcphub's internals move (State becomes per-hub,
+-- gets renamed, etc.) we degrade to a warning rather than break loading.
+--
+-- Only emit when at least one add_tool succeeded — emitting with no
+-- capability change just triggers a no-op re-registration storm.
+--------------------------------------------------------------------------------
+if ok_add or ok_add_read then
+    local ok_emit, err_emit = pcall(function()
+        require'mcphub.state':emit('tool_list_changed', {})
+    end)
+    if not ok_emit then
+        vim.notify(
+            'mcphub._native.edit: registered tools but failed to fire tool_list_changed: '
+            .. tostring(err_emit) .. ' (tools may not appear in CodeCompanion until next refresh)',
+            vim.log.levels.WARN
+        )
+    end
+end
+
 return {
     apply_edit             = apply_edit_tool,
     read_with_fingerprint  = read_with_fingerprint_tool,
