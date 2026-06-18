@@ -17,6 +17,7 @@ local widen_for_editui            = ui_backend._test.widen_for_editui
 local effective_range_after_widen = ui_backend._test.effective_range_after_widen
 local detect_widen_collisions     = ui_backend._test.detect_widen_collisions
 local collect_diagnostics         = ui_backend._test.collect_diagnostics
+local intersects_edited           = ui_backend._test.intersects_edited
 local resolve_lsp_wait_ms         = ui_backend._test.resolve_lsp_wait_ms
 local DEFAULT_LSP_WAIT_MS         = ui_backend._test.DEFAULT_LSP_WAIT_MS
 
@@ -463,14 +464,21 @@ describe('collect_diagnostics', function()
         return bufnr, cleanup
     end
 
-    it('returns an empty array for a buffer with no diagnostics', function()
+    --- An edited range covering the whole buffer, so every diagnostic counts
+    --- as "in range" regardless of context window. Used by tests that care
+    --- about the detail shape, not the range scoping.
+    local function all(n) return { { start_line = 1, end_line = n } } end
+
+    it('returns empty detail and zeroed counts for a buffer with no diagnostics', function()
         local bufnr, cleanup = with_diagnostics({ 'a', 'b' }, {})
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(0, #out)
+        local detail, counts = collect_diagnostics(bufnr, all(2))
+        assert.is.equal(0, #detail)
+        assert.is.equal(0, counts.errors)
+        assert.is.equal(0, counts.warnings)
         cleanup()
     end)
 
-    it('translates a single error to the canonical shape', function()
+    it('translates a single in-range error to the canonical shape', function()
         -- Inject one ERROR on line 1, cols 0-3 (0-based).
         -- Expected output: 1-based positions, severity='error'.
         local bufnr, cleanup = with_diagnostics({ 'abc def', 'ghi' }, {
@@ -480,9 +488,9 @@ describe('collect_diagnostics', function()
               source   = 'fake-lsp',
               code     = 'undef' },
         })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(1, #out)
-        local d = out[1]
+        local detail, counts = collect_diagnostics(bufnr, all(2))
+        assert.is.equal(1, #detail)
+        local d = detail[1]
         assert.is.equal('error',                d.severity)
         assert.is.equal(1,                      d.line)
         assert.is.equal(1,                      d.end_line)
@@ -491,12 +499,14 @@ describe('collect_diagnostics', function()
         assert.is.equal('undefined identifier', d.message)
         assert.is.equal('fake-lsp',             d.source)
         assert.is.equal('undef',                d.code)
+        assert.is.equal(1, counts.errors)
+        assert.is.equal(0, counts.warnings)
         cleanup()
     end)
 
-    it('filters out diagnostics below the severity threshold', function()
-        -- Inject one of each severity. With min_severity=WARN, expect
-        -- error+warn only (INFO and HINT excluded).
+    it('in-range detail includes ALL severities (info/hint not filtered)', function()
+        -- Inject one of each severity, all in range. Detail must include all
+        -- four; counts must tally errors+warnings only.
         local bufnr, cleanup = with_diagnostics({ 'a', 'b', 'c', 'd' }, {
             { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
               severity = vim.diagnostic.severity.ERROR, message = 'e' },
@@ -507,80 +517,144 @@ describe('collect_diagnostics', function()
             { lnum = 3, col = 0, end_lnum = 3, end_col = 1,
               severity = vim.diagnostic.severity.HINT,  message = 'h' },
         })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(2, #out)
+        local detail, counts = collect_diagnostics(bufnr, all(4))
+        assert.is.equal(4, #detail)
         -- Order is the order vim.diagnostic.get returns them in; for a
         -- single namespace that's insertion order.
-        assert.is.equal('error', out[1].severity)
-        assert.is.equal('warn',  out[2].severity)
+        assert.is.equal('error', detail[1].severity)
+        assert.is.equal('warn',  detail[2].severity)
+        assert.is.equal('info',  detail[3].severity)
+        assert.is.equal('hint',  detail[4].severity)
+        -- Counts: errors+warnings only; info/hint excluded.
+        assert.is.equal(1, counts.errors)
+        assert.is.equal(1, counts.warnings)
         cleanup()
     end)
 
-    it('includes all severities when threshold is HINT', function()
-        local bufnr, cleanup = with_diagnostics({ 'a', 'b' }, {
-            { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
-              severity = vim.diagnostic.severity.INFO, message = 'i' },
-            { lnum = 1, col = 0, end_lnum = 1, end_col = 1,
-              severity = vim.diagnostic.severity.HINT, message = 'h' },
+    it('detail is scoped to edited ranges +/- context window', function()
+        -- 30-line buffer. Edit at line 15. Default context = 10, so the
+        -- in-range window is [5, 25]. A diagnostic at line 8 is in range;
+        -- one at line 28 is out of range (but still counted file-wide).
+        local lines = {}
+        for i = 1, 30 do lines[i] = 'line ' .. i end
+        local bufnr, cleanup = with_diagnostics(lines, {
+            { lnum = 7, col = 0, end_lnum = 7, end_col = 1,   -- line 8: in range
+              severity = vim.diagnostic.severity.ERROR, message = 'near' },
+            { lnum = 27, col = 0, end_lnum = 27, end_col = 1, -- line 28: out of range
+              severity = vim.diagnostic.severity.ERROR, message = 'far' },
         })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.HINT)
-        assert.is.equal(2, #out)
-        assert.is.equal('info', out[1].severity)
-        assert.is.equal('hint', out[2].severity)
+        local detail, counts = collect_diagnostics(bufnr, { { start_line = 15, end_line = 15 } })
+        assert.is.equal(1, #detail)
+        assert.is.equal('near', detail[1].message)
+        assert.is.equal(8,      detail[1].line)
+        -- Whole-file counts include BOTH, even the out-of-range one.
+        assert.is.equal(2, counts.errors)
+        assert.is.equal(0, counts.warnings)
         cleanup()
     end)
 
-    it('translates multi-line diagnostics with distinct end_line', function()
-        -- 0-based lnum=0..2 → 1-based line=1, end_line=3
+    it('a custom context window widens/narrows the in-range set', function()
+        local lines = {}
+        for i = 1, 30 do lines[i] = 'line ' .. i end
+        local bufnr, cleanup = with_diagnostics(lines, {
+            { lnum = 19, col = 0, end_lnum = 19, end_col = 1,  -- line 20
+              severity = vim.diagnostic.severity.WARN, message = 'w20' },
+        })
+        -- Edit at line 15, context 0 -> window [15,15], line 20 excluded.
+        local d0 = collect_diagnostics(bufnr, { { start_line = 15, end_line = 15 } }, 0)
+        assert.is.equal(0, #d0)
+        -- Same edit, context 5 -> window [10,20], line 20 included.
+        local d5 = collect_diagnostics(bufnr, { { start_line = 15, end_line = 15 } }, 5)
+        assert.is.equal(1, #d5)
+        cleanup()
+    end)
+
+    it('a multi-line in-range diagnostic keeps distinct end_line', function()
+        -- 0-based lnum=0..2 -> 1-based line=1, end_line=3
         local bufnr, cleanup = with_diagnostics({ 'a', 'b', 'c' }, {
             { lnum = 0, col = 2, end_lnum = 2, end_col = 1,
               severity = vim.diagnostic.severity.ERROR, message = 'spans' },
         })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(1, #out)
-        assert.is.equal(1, out[1].line)
-        assert.is.equal(3, out[1].end_line)
-        assert.is.equal(3, out[1].col)
-        assert.is.equal(2, out[1].end_col)
+        local detail = collect_diagnostics(bufnr, all(3))
+        assert.is.equal(1, #detail)
+        assert.is.equal(1, detail[1].line)
+        assert.is.equal(3, detail[1].end_line)
+        assert.is.equal(3, detail[1].col)
+        assert.is.equal(2, detail[1].end_col)
         cleanup()
     end)
 
-    it('handles diagnostics with no end_lnum/end_col (defaults to start)', function()
-        -- Some LSP servers omit end_lnum/end_col. vim.diagnostic auto-fills
-        -- them to lnum/col, but we test our defaulting just in case the
-        -- shape changes upstream.
-        local bufnr, cleanup = with_diagnostics({ 'abc' }, {
-            { lnum = 0, col = 1, end_lnum = 0, end_col = 1,
-              severity = vim.diagnostic.severity.WARN, message = 'point' },
-        })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(1, #out)
-        assert.is.equal(1, out[1].line)
-        assert.is.equal(1, out[1].end_line)
-        assert.is.equal(2, out[1].col)
-        assert.is.equal(2, out[1].end_col)
-        cleanup()
-    end)
-
-    it('handles diagnostics with missing source / code', function()
+    it('handles in-range diagnostics with missing source / code', function()
         local bufnr, cleanup = with_diagnostics({ 'a' }, {
             { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
               severity = vim.diagnostic.severity.ERROR, message = 'bare' },
         })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(1, #out)
-        assert.is.equal(nil, out[1].source)
-        assert.is.equal(nil, out[1].code)
+        local detail = collect_diagnostics(bufnr, all(1))
+        assert.is.equal(1, #detail)
+        assert.is.equal(nil, detail[1].source)
+        assert.is.equal(nil, detail[1].code)
         cleanup()
     end)
 
-    it('returns an empty array when the buffer is invalid', function()
+    it('returns empty detail and zeroed counts when the buffer is invalid', function()
         local bufnr = vim.api.nvim_create_buf(false, true)
         vim.api.nvim_buf_delete(bufnr, { force = true })
-        local out = collect_diagnostics(bufnr, vim.diagnostic.severity.WARN)
-        assert.is.equal(0, #out)
+        local detail, counts = collect_diagnostics(bufnr, all(1))
+        assert.is.equal(0, #detail)
+        assert.is.equal(0, counts.errors)
+        assert.is.equal(0, counts.warnings)
+    end)
+
+    it('counts the whole file even when no edited range is given', function()
+        -- Empty edited_ranges -> no diagnostic is "in range", but counts
+        -- still tally the whole file.
+        local bufnr, cleanup = with_diagnostics({ 'a', 'b' }, {
+            { lnum = 0, col = 0, end_lnum = 0, end_col = 1,
+              severity = vim.diagnostic.severity.ERROR, message = 'e' },
+            { lnum = 1, col = 0, end_lnum = 1, end_col = 1,
+              severity = vim.diagnostic.severity.WARN,  message = 'w' },
+        })
+        local detail, counts = collect_diagnostics(bufnr, {})
+        assert.is.equal(0, #detail)
+        assert.is.equal(1, counts.errors)
+        assert.is.equal(1, counts.warnings)
+        cleanup()
     end)
 end)
+
+describe('intersects_edited', function()
+    it('returns true when the diagnostic overlaps an edited range', function()
+        assert.is_true(intersects_edited(10, 10, { { start_line = 8, end_line = 12 } }, 0))
+    end)
+
+    it('returns false when outside the range and context', function()
+        assert.is_false(intersects_edited(20, 20, { { start_line = 8, end_line = 12 } }, 0))
+    end)
+
+    it('context grows the range on both sides (inclusive boundary)', function()
+        -- Range [10,10], context 5 -> effective [5,15]. Lines 5 and 15 are in.
+        assert.is_true(intersects_edited(5, 5, { { start_line = 10, end_line = 10 } }, 5))
+        assert.is_true(intersects_edited(15, 15, { { start_line = 10, end_line = 10 } }, 5))
+        -- Line 4 and 16 are just out.
+        assert.is_false(intersects_edited(4, 4, { { start_line = 10, end_line = 10 } }, 5))
+        assert.is_false(intersects_edited(16, 16, { { start_line = 10, end_line = 10 } }, 5))
+    end)
+
+    it('a multi-line diagnostic straddling the window counts as in range', function()
+        -- Diagnostic spans [1,100]; even a tiny window intersects it.
+        assert.is_true(intersects_edited(1, 100, { { start_line = 50, end_line = 50 } }, 0))
+    end)
+
+    it('returns true if ANY of several edited ranges matches', function()
+        local ranges = { { start_line = 1, end_line = 1 }, { start_line = 90, end_line = 95 } }
+        assert.is_true(intersects_edited(92, 92, ranges, 0))
+    end)
+
+    it('returns false for an empty edited-ranges list', function()
+        assert.is_false(intersects_edited(10, 10, {}, 10))
+    end)
+end)
+
 
 describe('resolve_lsp_wait_ms', function()
     -- The resolver takes a client list directly (not a bufnr) so we can

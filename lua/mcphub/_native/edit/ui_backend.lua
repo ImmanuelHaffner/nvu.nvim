@@ -491,46 +491,94 @@ local SEVERITY_NAME = {
     [vim.diagnostic.severity.HINT]  = 'hint',
 }
 
---- Collect diagnostics from a buffer, filter by severity, and translate
---- to our `nvu.edit.Diagnostic` shape.
+--- Default number of context lines to extend each edited range by when
+--- deciding whether a diagnostic is "in range". A diagnostic counts as
+--- in-range if it intersects any edited range grown by this many lines on
+--- each side. 10 LOC is a pragmatic window: wide enough to catch a
+--- diagnostic the edit *caused* a few lines away (e.g. an unbalanced brace
+--- reported at the next statement), narrow enough to exclude the file's
+--- pre-existing unrelated noise.
+local DEFAULT_DIAGNOSTIC_CONTEXT_LINES = 10
+
+--- Does diagnostic line-span [d_s, d_e] intersect any edited range grown by
+--- `context` lines on each side? Inputs are 1-based inclusive.
+---
+--- @param d_s integer  diagnostic start line (1-based)
+--- @param d_e integer  diagnostic end line (1-based)
+--- @param edited_ranges { start_line: integer, end_line: integer }[]
+--- @param context integer
+--- @return boolean
+local function intersects_edited(d_s, d_e, edited_ranges, context)
+    for _, r in ipairs(edited_ranges) do
+        local lo = r.start_line - context
+        local hi = r.end_line + context
+        -- Overlap test: [d_s, d_e] vs [lo, hi].
+        if d_s <= hi and lo <= d_e then return true end
+    end
+    return false
+end
+
+--- Collect diagnostics for the response: detailed entries for diagnostics
+--- *near the edit*, plus whole-file counts.
 ---
 --- ## When to call this
 ---
---- Call inside `EditUI:get_summary`'s callback. By the time the callback
---- fires, mcphub has already deferred long enough for the LSP server's
---- post-`:write` diagnostics to arrive (gated by the
---- `wait_for_diagnostics` config we pass). Querying earlier would risk
---- reading a stale set; querying later wastes time.
+--- Call after the LSP server(s) have had time to publish post-`:write`
+--- diagnostics. We previously relied on mcphub's `get_summary` to honour
+--- that wait (via `send_diagnostics = true` + `wait_for_diagnostics`), but
+--- we now suppress mcphub's prose diagnostic block (`send_diagnostics =
+--- false`) and own the settle wait ourselves — see `finalise`. So the
+--- caller must `vim.defer_fn` this by the per-LSP wait before invoking.
+---
+--- ## Two views, by design
+---
+---   * `detail` — full `nvu.edit.Diagnostic[]`, **all severities**, but only
+---     for diagnostics intersecting an edited range ±`context_lines`. This
+---     is the actionable set: "did my edit break (or fix) anything right
+---     here?" Bounded by the edit footprint, not the file size, so it can't
+---     explode on a file that's already full of unrelated errors.
+---   * `counts` — whole-file tally of **errors and warnings only**
+---     (`{ errors = N, warnings = M }`). Info/hint are deliberately excluded:
+---     they're typically too chatty to be worth a number. This is the
+---     orientation signal: "the file as a whole has N errors" without
+---     serialising all N.
 ---
 --- ## Position conventions
 ---
 --- `vim.diagnostic.Diagnostic` uses 0-based positions exclusively. We
 --- translate every field to 1-based to match the rest of the response
---- shape (line ranges in `applied[]` / `rejected[]` are 1-based
---- inclusive everywhere).
+--- shape (line ranges in `applied[]` / `rejected[]` are 1-based inclusive
+--- everywhere).
 ---
---- ## Severity filter
----
---- `min_severity` is a `vim.diagnostic.severity` enum value. Diagnostics
---- with a numerically lower-or-equal severity (i.e. equal-or-more-severe)
---- are kept. Default `WARN` filters out `HINT` and `INFO`, which are
---- typically too chatty for LLM consumption. To get everything, pass
---- `vim.diagnostic.severity.HINT`.
----
---- @param bufnr        integer
---- @param min_severity integer  vim.diagnostic.severity enum value
---- @return nvu.edit.Diagnostic[]
-local function collect_diagnostics(bufnr, min_severity)
-    if not vim.api.nvim_buf_is_valid(bufnr) then return {} end
+--- @param bufnr         integer
+--- @param edited_ranges  { start_line: integer, end_line: integer }[]  1-based inclusive
+--- @param context_lines integer?  defaults to DEFAULT_DIAGNOSTIC_CONTEXT_LINES
+--- @return nvu.edit.Diagnostic[]                detail  (in-range, all severities)
+--- @return { errors: integer, warnings: integer } counts  (whole-file, error+warn only)
+local function collect_diagnostics(bufnr, edited_ranges, context_lines)
+    local counts = { errors = 0, warnings = 0 }
+    if not vim.api.nvim_buf_is_valid(bufnr) then return {}, counts end
+    context_lines = context_lines or DEFAULT_DIAGNOSTIC_CONTEXT_LINES
+    edited_ranges = edited_ranges or {}
 
     local all = vim.diagnostic.get(bufnr)
-    local out = {}
+    local detail = {}
     for _, d in ipairs(all) do
-        if d.severity <= min_severity then
-            out[#out + 1] = {
+        -- Whole-file counts: errors and warnings only.
+        if d.severity == vim.diagnostic.severity.ERROR then
+            counts.errors = counts.errors + 1
+        elseif d.severity == vim.diagnostic.severity.WARN then
+            counts.warnings = counts.warnings + 1
+        end
+
+        -- In-range detail: all severities, but only near an edited range.
+        local d_s = (d.lnum or 0) + 1
+        local d_e = (d.end_lnum or d.lnum or 0) + 1
+        if intersects_edited(d_s, d_e, edited_ranges, context_lines) then
+            detail[#detail + 1] = {
                 severity = SEVERITY_NAME[d.severity] or 'error',
-                line     = (d.lnum or 0) + 1,
-                end_line = (d.end_lnum or d.lnum or 0) + 1,
+                line     = d_s,
+                end_line = d_e,
                 col      = (d.col or 0) + 1,
                 end_col  = (d.end_col or d.col or 0) + 1,
                 message  = d.message or '',
@@ -539,7 +587,7 @@ local function collect_diagnostics(bufnr, min_severity)
             }
         end
     end
-    return out
+    return detail, counts
 end
 
 --- Walk `EditUI.state.completed_hunks` and aggregate hunk-level statuses up
@@ -677,26 +725,30 @@ function M.drive_file(request, file_cb)
         local completed_hunks = vim.deepcopy(ui.state and ui.state.completed_hunks or {})
         local per_block = aggregate_per_block(completed_hunks, block_ids)
 
-        -- `get_summary` waits up to `wait_for_diagnostics` ms after the
-        -- (possible) write before invoking our callback. We enable
-        -- `send_diagnostics = true` so mcphub honours that wait (and
-        -- appends a human-readable diagnostic block to the summary
-        -- string for users reading the chat). Once the callback fires,
-        -- we collect the same diagnostics ourselves into the structured
-        -- `Diagnostic[]` shape that the LLM consumes via
-        -- `files[].diagnostics`.
+        -- ## Diagnostics: own the settle wait, suppress mcphub's prose block
         --
-        -- Why both: the prose form in `ui_summary` is for humans skimming
-        -- the chat; the structured form lets the LLM cite line numbers,
-        -- group by severity, or correlate against its own edits. Two
-        -- views of the same data, each tailored to one consumer.
-        -- Wait for the LSP server(s) to publish post-write diagnostics,
-        -- with the wait time selected per-LSP via `M.LSP_WAIT_MS`. When
-        -- the buffer has no LSP attached the resolver returns 0 — no
-        -- publisher exists, so the wait is dead time (felt as latency
-        -- in headless tests and on untyped-file edits). With multiple
-        -- LSPs attached the resolver picks the max so we hear from all
-        -- of them.
+        -- We pass `send_diagnostics = false` to `get_summary`. That does two
+        -- things in mcphub's `EditUI:_add_diagnostic_feedback`:
+        --   1. It suppresses the `## CURRENT DIAGNOSTICS FOR ...` prose block
+        --      that mcphub would otherwise append to the summary string. That
+        --      block is whole-file, unbounded, and (for us) redundant with the
+        --      structured `diagnostics`/`diagnostic_counts` we emit ourselves.
+        --      On a file already full of unrelated errors it dominated the
+        --      response payload.
+        --   2. As a side effect, it also disables mcphub's internal
+        --      `vim.defer_fn(..., wait_for_diagnostics)` settle wait — that
+        --      wait lives *inside* the same `send_diagnostics`-gated branch.
+        --
+        -- Because (2) means mcphub no longer waits for the LSP to publish, we
+        -- own the settle wait here: `get_summary`'s callback fires promptly,
+        -- and we `vim.defer_fn` our own `collect_diagnostics` by the per-LSP
+        -- ceiling so we still read a fresh diagnostic set.
+        --
+        -- The wait time is selected per-LSP via `M.LSP_WAIT_MS`. When the
+        -- buffer has no LSP attached the resolver returns 0 — no publisher
+        -- exists, so the wait is dead time (felt as latency in headless tests
+        -- and on untyped-file edits). With multiple LSPs attached the
+        -- resolver picks the max so we hear from all of them.
         local lsp_wait_ms = resolve_lsp_wait_ms(
             vim.lsp.get_clients{ bufnr = bufnr_for_diagnostics },
             M.LSP_WAIT_MS,
@@ -704,31 +756,48 @@ function M.drive_file(request, file_cb)
         local summary_config = {
             include_session_summary = true,
             include_final_diff      = false,
-            send_diagnostics        = true,
-            wait_for_diagnostics    = lsp_wait_ms,
-            diagnostic_severity     = vim.diagnostic.severity.WARN,
+            send_diagnostics        = false,
         }
-        ui:get_summary(summary_config, function(summary_text)
-            -- Snapshot diagnostics BEFORE cleanup. `cleanup()` may detach
-            -- the buffer from view; `vim.diagnostic.get` still works on
-            -- the bufnr, but reading before cleanup keeps the temporal
-            -- order obvious and avoids surprises if mcphub ever clears
-            -- diagnostic state in `cleanup`.
-            local diagnostics = collect_diagnostics(
-                bufnr_for_diagnostics,
-                summary_config.diagnostic_severity)
 
-            ui:cleanup()
-            file_cb{
-                status        = status,
-                cancel_reason = cancel_reason,
-                per_block     = per_block,
-                ui_summary    = summary_text ~= '' and summary_text or nil,
-                diagnostics   = diagnostics,
+        -- Edited ranges (pre-edit / planner line numbers) used to scope the
+        -- in-range diagnostic detail. NOTE: these are the ranges as the
+        -- planner saw them, not the post-edit positions — a multi-block edit
+        -- earlier in the file can shift later blocks by the net line delta.
+        -- The ±context window in `collect_diagnostics` absorbs small shifts;
+        -- computing true post-edit ranges is a tracked follow-up.
+        local edited_ranges = {}
+        for _, b in ipairs(request.blocks) do
+            edited_ranges[#edited_ranges + 1] = {
+                start_line = b.range.start_line,
+                end_line   = b.range.end_line,
             }
+        end
+
+        ui:get_summary(summary_config, function(summary_text)
+            -- mcphub no longer waits for diagnostics (send_diagnostics =
+            -- false), so we own the LSP settle wait here before collecting.
+            -- A 0ms wait still schedules onto the next tick, which is fine.
+            vim.defer_fn(function()
+                -- Snapshot diagnostics BEFORE cleanup. `cleanup()` may detach
+                -- the buffer from view; `vim.diagnostic.get` still works on
+                -- the bufnr, but reading before cleanup keeps the temporal
+                -- order obvious and avoids surprises if mcphub ever clears
+                -- diagnostic state in `cleanup`.
+                local diagnostics, diagnostic_counts =
+                    collect_diagnostics(bufnr_for_diagnostics, edited_ranges)
+
+                ui:cleanup()
+                file_cb{
+                    status            = status,
+                    cancel_reason     = cancel_reason,
+                    per_block         = per_block,
+                    ui_summary        = summary_text ~= '' and summary_text or nil,
+                    diagnostics       = diagnostics,
+                    diagnostic_counts = diagnostic_counts,
+                }
+            end, lsp_wait_ms)
         end)
     end
-
     ui:start_interactive_editing{
         interactive              = request.interactive ~= false,
         is_replacing_entire_file = false,
@@ -750,6 +819,8 @@ M._test = {
     effective_range_after_widen   = effective_range_after_widen,
     detect_widen_collisions       = detect_widen_collisions,
     collect_diagnostics           = collect_diagnostics,
+    intersects_edited             = intersects_edited,
+    DEFAULT_DIAGNOSTIC_CONTEXT_LINES = DEFAULT_DIAGNOSTIC_CONTEXT_LINES,
     resolve_lsp_wait_ms           = resolve_lsp_wait_ms,
     DEFAULT_LSP_WAIT_MS           = DEFAULT_LSP_WAIT_MS,
 }

@@ -102,11 +102,20 @@
 ---                                       and may carry reason-specific extras (e.g. `range`,
 ---                                       `conflicting_op_indices`). Driver-supplied.
 --- @field ui_summary    string?         Free-form per-file summary for the LLM.
---- @field diagnostics   nvu.edit.Diagnostic[]?  Structured LSP diagnostics for this
----                                       file's buffer at completion time. Driver-
----                                       supplied; absent means "not collected". An
----                                       empty array means "collected, nothing to
----                                       report". See `nvu.edit.Diagnostic` below.
+--- @field diagnostics   nvu.edit.Diagnostic[]?  Structured LSP diagnostics **near the
+---                                       edit** — those intersecting an edited range
+---                                       ± a context window (driver's choice; the
+---                                       mcphub backend uses ±10 lines). All severities.
+---                                       Driver-supplied; absent means "not collected".
+---                                       An empty array means "collected, nothing to
+---                                       report near the edit". This is intentionally
+---                                       NOT the whole-file set — see `diagnostic_counts`
+---                                       for the file-wide tally. See `nvu.edit.Diagnostic`.
+--- @field diagnostic_counts nvu.edit.DiagnosticCounts?  Whole-file tally of errors and
+---                                       warnings (info/hint excluded as too chatty).
+---                                       Driver-supplied; absent means "not collected".
+---                                       Lets the LLM orient ("the file has N errors")
+---                                       without serialising every one.
 ---
 --- A single LSP-style diagnostic, normalised for LLM consumption.
 ---
@@ -125,6 +134,13 @@
 --- @field message  string
 --- @field source   string?   e.g. "Lua Diagnostics."
 --- @field code     (string|integer)?  e.g. "missing-fields"
+
+--- Whole-file diagnostic tally. Errors and warnings only — info/hint are
+--- excluded as too chatty to be worth a count. Driver-supplied.
+---
+--- @class nvu.edit.DiagnosticCounts
+--- @field errors   integer  whole-file error count
+--- @field warnings integer  whole-file warning count
 
 local M = {}
 
@@ -412,6 +428,12 @@ function M.apply_plan(plan, opts, drive_file, on_done)
                 -- here keeps the wire shape stable. A driver that doesn't
                 -- collect diagnostics still produces `[]`, not `null`.
                 diagnostics   = outcome.diagnostics or {},
+                -- Whole-file error/warning tally. Unlike `diagnostics` (an
+                -- array that defaults to `[]`), this is an object; default to
+                -- a zeroed tally so the wire shape is stable and the LLM never
+                -- has to nil-check. A driver that doesn't collect still
+                -- reports `{ errors = 0, warnings = 0 }`.
+                diagnostic_counts = outcome.diagnostic_counts or { errors = 0, warnings = 0 },
             }
 
             if outcome.status == 'precondition_failed' then
