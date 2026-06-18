@@ -123,6 +123,35 @@ over the SEARCH/REPLACE approach of "guess the closest match" — the
 guess produces silent wrong-location edits, which is exactly what this
 tool exists to eliminate.
 
+### All ops resolve against one pre-edit snapshot; apply compensates for drift
+
+Every op in a batch is resolved by the planner against the **same**
+original `FileRecord` content. Anchors are never re-resolved against a
+partially-mutated buffer. The applier then hands the whole block list to
+`drive_file` at once; it does not apply one block and re-resolve the
+next.
+
+mcphub's `EditUI:_apply_all_changes` applies blocks **ascending** by
+`start_line` while carrying a running `base_line_offset` (`+= #replace
+- original_span` after each block), so a later op's pre-edit line numbers
+are shifted by the net line delta of everything applied before it. Net
+effect: an earlier op that grows or shrinks the file does not drift a
+later op. (Note: this is offset *compensation*, not bottom-up apply —
+don't "simplify" the engine on the assumption that blocks are applied
+last-first.)
+
+This is pinned by `tests/edit/e2e_spec.lua`'s line-drift regression
+block: two specs assert the on-disk result is byte-identical under the
+bottom-up `accept_all` driver and the ascending+offset
+`accept_all_ascending` driver (which reproduces mcphub's algorithm). If
+mcphub's offset bookkeeping or our block construction regresses, the
+equivalence specs fail while the bottom-up specs still pass, isolating
+the fault to the apply traversal. The user-facing consequence is
+documented in the README's *Batch ordering* section: submit ops in any
+order with original line numbers; never pre-sort descending or
+hand-offset.
+
+
 ### `unique_text` defaults to must-be-unique
 
 Without `occurrence: "all"`, more than one match is `anchor_ambiguous`,
@@ -274,7 +303,7 @@ Calls `nvu.edit.apply` for apply, `nvu.edit.read` for read.
 | ---------------------------------- | ------------------------------------------------------------- |
 | `tests/edit/`                      | Pure engine. No mcphub imports.                               |
 | `tests/edit/helpers.lua`           | `schema.validate` / `planner.plan` wrappers with `bypass_fingerprint = true`. |
-| `tests/edit/drivers.lua`           | Synthetic `drive_file` implementations: `accept_all`, `reject_all`, `make_selective`, `cancel_at`. |
+| `tests/edit/drivers.lua`           | Synthetic `drive_file` implementations: `accept_all` (bottom-up apply), `accept_all_ascending` (mcphub-style ascending+offset apply), `reject_all`, `make_selective`, `cancel_at`. |
 | `tests/edit/e2e_spec.lua`          | End-to-end through `nvu.edit.apply` with `accept_all`.        |
 | `tests/edit/applier_spec.lua`      | Applier outcome shapes via synthetic drivers.                 |
 | `tests/edit/fingerprint_enforcement_spec.lua` | Direct calls to `schema.validate` / `planner.plan` *without* bypass — exercises the strict path. |
@@ -407,19 +436,30 @@ file-edit test.
 Things intentionally not done. Listed here so a maintainer doesn't
 re-derive the design from scratch.
 
-### Indentation: `match_anchor` algorithm
+### Indentation: `detect` mode
 
-`indent` is accepted by the schema (`match_anchor` default, `preserve`,
-`detect`) but the applier currently treats every mode as `preserve` —
-content goes in verbatim. The full `match_anchor` algorithm is a
-non-trivial heuristic with multiple edge cases (zero-width positions,
-mixed indent in the existing block, content with relative indent
-already applied by the LLM, etc.). Designed but not implemented;
-algorithm sketch and seven worked edge cases live in
-`docs/indent-design-notes.md` (untracked working notes).
+`indent` is accepted by the schema with three modes: `match_anchor`
+(default), `preserve`, and `detect`. The first two are implemented;
+`detect` currently downgrades to `match_anchor`.
 
-Trigger: after MVP ships and real LLM-issued `apply_edit` calls give
-us a corpus to validate the heuristic against.
+`match_anchor` is implemented in `lua/nvu/edit/indent.lua` (pure module)
+and wired into the planner's anchor-resolution step. The algorithm is
+deliberately dead-simple — **prepend the anchor span's leading
+whitespace (its first line's) to every non-blank content line; blank
+lines stay blank**. It is additive: content is written relative to
+column 0 and shifted to the anchor's depth, so internal relative
+indentation is preserved. We rejected the earlier `min`-base /
+following-line-inference heuristics as unpredictable; the superseded
+sketch is marked as such in `docs/indent-design-notes.md`.
+
+`preserve` inserts content byte-for-byte and is the right choice for a
+multi-line `replace_range` over a mixed-indent region, where one prefix
+does not fit every line.
+
+Still deferred: `detect` (infer the indent from `.editorconfig`,
+treesitter, or a content heuristic). Trigger: real-usage signal that
+the `match_anchor` default is wrong often enough to justify the
+complexity.
 
 ### Event-driven diagnostic settle
 

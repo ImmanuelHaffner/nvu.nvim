@@ -302,44 +302,69 @@ local apply_edit_input_schema = {
 --------------------------------------------------------------------------------
 
 local apply_edit_description = [[
-Apply a batch of structured edits to existing files. Plan-phase
-failures are atomic — if any anchor fails to resolve, no buffer is
-touched. The user then reviews each hunk and may accept or reject
-individually; outcomes are reported per-op in `applied[]` / `rejected[]`.
+Apply a batch of structured edits to existing files. Use this for editing *inside* existing files; for file create / delete / rename use `neovim__write_file`, `neovim__delete_items`, `neovim__move_item`.
 
-Each op selects a location with an `anchor` (by `line_range`,
-`unique_text`, or `before`/`after`/`inside` a base anchor) and either
-replaces, inserts, or deletes.
+Failures are plan-atomic: if any op fails to resolve, no buffer is touched and the response lists every problem with candidates and a hint — no fuzzy guessing, no silent wrong-location edits. Otherwise the user reviews each hunk and accepts or rejects it; per-op outcomes come back in `applied[]` / `rejected[]`.
 
-`replace_range`, `insert`, and `delete_range` are line-granular: their
-anchors select whole line(s), and they replace, insert, or remove whole
-lines. A `unique_text` anchor only *locates* the line(s); it does not
-narrow `replace_range` to the matched substring. So for these ops
-`content` must be the complete new line(s), including any unchanged text
-on the line.
+Each op has a `kind`, a `path`, a `baseline_fingerprint` (from `neovim__read_with_fingerprint`; a mismatch means the file changed under you and the op is refused), and an `anchor`.
 
-Content for replace/insert goes inline in `content` for short text, or
-by reference in `content_ref` → `contents[label]` for multi-line bulk.
+ANCHORS locate by `line_range` (1-based inclusive `start`/`end`) or `unique_text` (a verbatim substring, which may span several lines, that must match exactly once unless `occurrence` selects `{nth}` or `all`). A base anchor resolves to a span of whole line(s) `[S..E]`.
 
-Indentation: the default `indent: "match_anchor"` prepends the anchor
-line's leading whitespace to each line of `content` (write `content`
-starting at column 0; its internal relative indentation is preserved and
-the block is shifted to the anchor's depth). Use `indent: "preserve"` to
-insert `content` byte-for-byte — preferable for a multi-line
-`replace_range` over a mixed-indent region, where one prefix does not fit
-every line. Blank content lines stay blank.
+The anchor plays one of two roles, depending on the op:
 
-On ambiguity or miss, the response returns a structured failure with
-candidate ranges and a hint — no fuzzy guessing, no silent wrong-location
-edits.
+  * For `replace_range` and `delete_range` the anchor IS the edit extent. The op acts on exactly the line(s) `[S..E]` it resolves to and never expands to the surrounding block: anchoring on the first line of a paragraph, function, or list edits only that one line. To act on a whole block the anchor must cover all of its lines (a `line_range` spanning them, or a `unique_text` matching the entire block).
+  * For `insert` the anchor must be wrapped in a positional MODIFIER that turns the span into an insertion position; the span's own line(s) are left unchanged and `content` is placed at that position.
 
-Use this for *editing inside existing files*. For file create / delete /
-rename, use `neovim__write_file`, `neovim__delete_items`,
-`neovim__move_item` respectively.
+MODIFIERS compute a position mechanically from the resolved span's edges — the engine has no block awareness:
+
+  * `before` → just above the span (before line S).
+  * `after`  → just below the span (after line E).
+  * `inside` with `at: "start"` → just after the span's FIRST line.
+  * `inside` with `at: "end"`   → just before the span's LAST line.
+
+You supply the context the engine lacks by choosing the span: make it long enough (often a multi-line `unique_text`) to (a) match uniquely and (b) place its first or last line at the seam where you want to insert. A single-line anchor is often ambiguous; extending it with neighbouring lines both disambiguates and frames the position. `before`/`after` pin to the OUTER edges of the span; `inside` pins to the INNER positions — use whichever places content where you mean.
+
+These ops are line-granular: anchors resolve to whole lines, and edits add, replace, or remove whole lines. A `unique_text` match selects the whole line(s) it falls on, never just the matched substring — so for `replace_range`, `content` must be the complete new line(s), including any unchanged text on the matched line(s).
+
+CONTENT for replace/insert is supplied as exactly one of `content` (inline, for short text) or `content_ref` → `contents[label]` (for multi-line bulk). `delete_range` takes no content.
+
+BATCH ORDERING: every op in one call is resolved against the SAME original file (the snapshot your `baseline_fingerprint` pins), then all are applied together with line-shift bookkeeping handled internally. Line numbers always refer to that original file: an earlier op that grows or shrinks the file does NOT move the numbers a later op should use. Submit ops in any order with original line numbers throughout; do NOT pre-sort ops descending or hand-adjust line numbers to compensate for other edits in the batch.
+
+INDENTATION: the default `indent: "match_anchor"` prepends the anchor span's leading whitespace (taken from its first line) to each content line — write `content` at column 0 and its internal relative indentation is preserved while the block is shifted to the anchor's depth; blank lines stay blank. Use `indent: "preserve"` to insert `content` byte-for-byte, which is the right choice for a multi-line `replace_range` over a mixed-indent region where a single prefix does not fit every line.
+
+EXAMPLES (anchors abbreviated; each op also needs `path` and `baseline_fingerprint`):
+
+  Replace lines 10–12 with new text:
+    { kind: replace_range,
+      anchor: { by: line_range, start: 10, end: 12 },
+      content: "..." }
+
+  Rewrite one whole line located by its text (content is the WHOLE line):
+    { kind: replace_range,
+      anchor: { by: unique_text, text: "  let total = subtotal" },
+      content: "  let total = subtotal + tax" }
+
+  Insert a guard at the start of a function body. The multi-line span is unique where `if x > 42 then` alone is not, and `at: start` lands the insert just after the signature line:
+    { kind: insert,
+      anchor: { by: inside, at: start,
+                of: { by: unique_text,
+                      text: "function foo(x)\n    if x > 42 then" } },
+      content: "    if x == nil then return 'dang' end" }
+
+  Insert a line above a uniquely-identified line:
+    { kind: insert,
+      anchor: { by: before, of: { by: unique_text, text: "return result" } },
+      content: "result = normalize(result)" }
+
+  Delete a block by line range:
+    { kind: delete_range, anchor: { by: line_range, start: 40, end: 47 } }
+
+  Two edits in one call, original line numbers, any order:
+    [ { kind: replace_range, anchor: { by: line_range, start: 3, end: 3 },
+        content: "..." },
+      { kind: insert, anchor: { by: after,
+          of: { by: line_range, start: 20, end: 20 } }, content: "..." } ]
 ]]
-
---------------------------------------------------------------------------------
--- Tool registration
 --------------------------------------------------------------------------------
 
 --- @type MCPTool
@@ -395,29 +420,13 @@ local read_input_schema = {
 }
 
 local read_description = [[
-Read a file and receive its content together with an opaque baseline
-fingerprint. The fingerprint is the LLM's receipt: pass it back
-verbatim in the `baseline_fingerprint` field of every `apply_edit`
-op against this file. The planner re-computes the fingerprint at
-apply time and refuses the batch on mismatch (`stale_fingerprint`),
-closing the race where the file mutates between read and edit.
+Read a file and receive its content together with an opaque baseline fingerprint. The fingerprint is the LLM's receipt: pass it back verbatim in the `baseline_fingerprint` field of every `apply_edit` op against this file. The planner re-computes the fingerprint at apply time and refuses the batch on mismatch (`stale_fingerprint`), closing the race where the file mutates between read and edit.
 
-This is the **canonical** read path for text files. Prefer it over
-`execute_command` + `sed`/`head`/`awk`/`cat` even for verification
-reads after an edit: those bypass the fingerprint binding and the
-buffer-first semantics, and route through the spill guard. Treat the
-fingerprint as opaque; do not parse or regenerate it.
+This is the **canonical** read path for text files. Prefer it over `execute_command` + `sed`/`head`/`awk`/`cat` even for verification reads after an edit: those bypass the fingerprint binding and the buffer-first semantics, and route through the spill guard. Treat the fingerprint as opaque; do not parse or regenerate it.
 
-Optional range projection: pass `start_line` and/or `end_line`
-(1-based, inclusive) to restrict the returned `content` to a slice
-of the file. Defaults: `start_line = 1`, `end_line = total_lines`.
-`end_line` past EOF clamps silently; `start_line` past EOF refuses
-with `start_after_eof` (your view of the file is stale). The
-`baseline_fingerprint` is always whole-file regardless of the range
-— do not assume a partial read pins only the part you read.
+Optional range projection: pass `start_line` and/or `end_line` (1-based, inclusive) to restrict the returned `content` to a slice of the file. Defaults: `start_line = 1`, `end_line = total_lines`. `end_line` past EOF clamps silently; `start_line` past EOF refuses with `start_after_eof` (your view of the file is stale). The `baseline_fingerprint` is always whole-file regardless of the range — do not assume a partial read pins only the part you read.
 
-Returns on success: { status: "ok", path, content, baseline_fingerprint,
-  start_line, end_line, returned_lines, total_lines }
+Returns on success: { status: "ok", path, content, baseline_fingerprint, start_line, end_line, returned_lines, total_lines }
 On error: { status: "failed", summary, failed: [{ reason, path, message, hint, ... }] }
 ]]
 

@@ -20,6 +20,7 @@ see [`AGENTS.md`](AGENTS.md).
 - [The protocol](#the-protocol)
   - [Anchors](#anchors)
   - [Operations](#operations)
+    - [Batch ordering](#batch-ordering)
   - [Content sources](#content-sources)
   - [Baseline fingerprints](#baseline-fingerprints)
 - [The response](#the-response)
@@ -215,6 +216,16 @@ inserting an opening or trailing statement within it. On a single-line
 base, `inside` collapses to the same position as `before` / `after`
 (at: start → before; at: end → after).
 
+These positions are computed mechanically from the span's edges; the
+engine has no block awareness — `at: "start"` means "after the span's
+first line", not "at the semantic start of a block". You supply the
+context the engine lacks by **choosing the span**: make a `unique_text`
+long enough to (a) match uniquely where a single line would be ambiguous,
+and (b) place its first or last line at the seam where you want to
+insert. Extending an anchor with neighbouring lines both disambiguates
+and frames the position; `before`/`after` pin to the span's outer edges,
+`inside` to its inner positions.
+
 These modifiers may only wrap `line_range` or `unique_text` bases.
 Modifier-of-modifier (e.g. `before of before of ...`) is rejected by the
 schema.
@@ -229,6 +240,15 @@ Lua: `{ by = 'before', of = { by = 'line_range', start = 5, ['end'] = 5 } }`
 
 Three operation kinds. Each carries `path`, `baseline_fingerprint`,
 `anchor`, and (for replace/insert) content.
+
+The anchor plays one of two roles. For `replace_range` and `delete_range`
+the anchor **is the edit extent**: the op acts on exactly the line(s) the
+anchor resolves to and never expands to the surrounding block. Anchoring
+on the first line of a paragraph, function, or list edits only that one
+line — to act on a whole block the anchor must cover all of its lines (a
+`line_range` spanning them, or a `unique_text` matching the entire block).
+For `insert` the anchor is a position only (it must be modifier-wrapped);
+the span's own line(s) are left unchanged and content is placed adjacent.
 
 #### `replace_range`
 
@@ -277,6 +297,22 @@ Remove the lines covered by the anchor. Carries no content.
   "anchor": { "by": "unique_text", "text": "// TODO: remove this" }
 }
 ```
+
+### Batch ordering
+
+Every op in one call is resolved against the **same original file** — the
+snapshot your `baseline_fingerprint` pins — and then all ops are applied
+together, with line-shift bookkeeping handled internally. Line numbers
+always refer to that original file: an earlier op that grows or shrinks
+the file does **not** move the line numbers a later op should use.
+
+So submit ops in any order, using original line numbers throughout. Do
+**not** pre-sort ops descending by line, and do **not** hand-adjust line
+numbers to compensate for the net line-count change of other edits in the
+batch — the engine already does this. (Overlapping edits are a different
+matter: two ops whose ranges touch the same lines are refused with
+`range_conflict`; see Errors below.)
+
 
 ### Content sources
 
