@@ -32,6 +32,16 @@ local function await_apply(input)
     return response
 end
 
+--- Like `await_apply`, but lets the caller pick the synthetic driver (e.g.
+--- `accept_all_ascending` to mirror mcphub's apply traversal).
+local function await_apply_with(input, drive_file)
+    local response
+    edit.apply(input, drive_file, function(r) response = r end)
+    local ok = vim.wait(100, function() return response ~= nil end, 1)
+    assert(ok, 'edit.apply did not complete within 100ms')
+    return response
+end
+
 --- Write `lines` to a tempfile, load it into a buffer (mirrors the
 --- buffer-first read path used by `read_with_fingerprint`), and return
 --- `(path, bufnr, fingerprint)`.
@@ -180,3 +190,174 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
         cleanup_fixture(path_b, buf_b)
     end)
 end)
+
+--- ## Line-drift regression
+---
+--- These pin the guarantee that a batch of `replace_range` / `insert` /
+--- `delete_range` ops within one file does NOT drift later ops when an
+--- earlier op changes the line count. The planner resolves every anchor
+--- against one pre-edit snapshot; the apply phase must compensate for the
+--- net line delta so each op lands at its intended (pre-edit) location.
+---
+--- Two things are pinned:
+---
+---   1. The on-disk result is correct under the bottom-up `accept_all`
+---      driver (no offset bookkeeping needed by construction).
+---   2. The on-disk result is *byte-identical* under the
+---      `accept_all_ascending` driver, which mirrors mcphub's real
+---      `EditUI:_apply_all_changes` (ascending sort + running
+---      `base_line_offset`). This is the production traversal, so this
+---      assertion is what actually guards against a mcphub-side or
+---      block-construction regression reintroducing drift.
+describe('nvu.edit.apply line-drift regression', function()
+    -- The canonical scenario from the design discussion: an early op grows
+    -- the file (net +N lines), and a second op targets a line further down.
+    -- If positions drifted, the second op would land in the wrong place.
+    local function net_positive_input(path, fp)
+        return {
+            ops = {
+                -- Replace 1 line (line 2) with 4 lines: net +3.
+                { kind = 'replace_range', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'line_range', start = 2, ['end'] = 2 },
+                  content = 'two-a\ntwo-b\ntwo-c\ntwo-d' },
+                -- Target a line well below the growth point. Pre-edit line 6.
+                { kind = 'replace_range', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'line_range', start = 6, ['end'] = 6 },
+                  content = 'SIX' },
+            },
+        }
+    end
+
+    -- The mirror scenario: an early op shrinks the file (net -N), and a
+    -- later op must still land correctly despite the contraction above it.
+    local function net_negative_input(path, fp)
+        return {
+            ops = {
+                -- Delete lines 2-4: net -3.
+                { kind = 'delete_range', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'line_range', start = 2, ['end'] = 4 } },
+                -- Target pre-edit line 6, below the deletion.
+                { kind = 'replace_range', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'line_range', start = 6, ['end'] = 6 },
+                  content = 'SIX' },
+            },
+        }
+    end
+
+    it('net-positive earlier op does not drift a later op (bottom-up driver)', function()
+        local path, bufnr, fp =
+            fixture_file{ 'one', 'two', 'three', 'four', 'five', 'six', 'seven' }
+        local response = await_apply_with(net_positive_input(path, fp), drivers.accept_all)
+        assert.is.equal('applied', response.status)
+        assert.is.equal(2, #response.applied)
+
+        -- Expected: line 2 expanded to four lines, original line 6 ("six")
+        -- replaced by "SIX", everything else intact.
+        local on_disk = vim.fn.readfile(path)
+        assert.is.equal('one',   on_disk[1])
+        assert.is.equal('two-a', on_disk[2])
+        assert.is.equal('two-b', on_disk[3])
+        assert.is.equal('two-c', on_disk[4])
+        assert.is.equal('two-d', on_disk[5])
+        assert.is.equal('three', on_disk[6])
+        assert.is.equal('four',  on_disk[7])
+        assert.is.equal('five',  on_disk[8])
+        assert.is.equal('SIX',   on_disk[9])   -- the load-bearing line
+        assert.is.equal('seven', on_disk[10])
+        assert.is.equal(10,      #on_disk)
+
+        cleanup_fixture(path, bufnr)
+    end)
+
+    it('net-negative earlier op does not drift a later op (bottom-up driver)', function()
+        local path, bufnr, fp =
+            fixture_file{ 'one', 'two', 'three', 'four', 'five', 'six', 'seven' }
+        local response = await_apply_with(net_negative_input(path, fp), drivers.accept_all)
+        assert.is.equal('applied', response.status)
+        assert.is.equal(2, #response.applied)
+
+        -- Expected: lines 2-4 gone, original line 6 ("six") replaced by "SIX".
+        local on_disk = vim.fn.readfile(path)
+        assert.is.equal('one',   on_disk[1])
+        assert.is.equal('five',  on_disk[2])
+        assert.is.equal('SIX',   on_disk[3])   -- the load-bearing line
+        assert.is.equal('seven', on_disk[4])
+        assert.is.equal(4,       #on_disk)
+
+        cleanup_fixture(path, bufnr)
+    end)
+
+    -- The production guard: mcphub applies ascending with a running offset.
+    -- Prove that traversal lands byte-identical to the bottom-up reference
+    -- for both net-positive and net-negative batches. If mcphub's offset
+    -- bookkeeping (or our block construction feeding it) ever regresses,
+    -- this fails while the bottom-up tests above still pass — isolating the
+    -- fault to the apply traversal.
+    it('mcphub-style ascending+offset traversal agrees with bottom-up (net +)', function()
+        local lines = { 'one', 'two', 'three', 'four', 'five', 'six', 'seven' }
+
+        local p1, b1, fp1 = fixture_file(lines, '_botup.txt')
+        await_apply_with(net_positive_input(p1, fp1), drivers.accept_all)
+        local botup = vim.fn.readfile(p1)
+
+        local p2, b2, fp2 = fixture_file(lines, '_asc.txt')
+        await_apply_with(net_positive_input(p2, fp2), drivers.accept_all_ascending)
+        local ascending = vim.fn.readfile(p2)
+
+        assert.is.equal(table.concat(botup, '\n'), table.concat(ascending, '\n'))
+
+        cleanup_fixture(p1, b1)
+        cleanup_fixture(p2, b2)
+    end)
+
+    it('mcphub-style ascending+offset traversal agrees with bottom-up (net -)', function()
+        local lines = { 'one', 'two', 'three', 'four', 'five', 'six', 'seven' }
+
+        local p1, b1, fp1 = fixture_file(lines, '_botup.txt')
+        await_apply_with(net_negative_input(p1, fp1), drivers.accept_all)
+        local botup = vim.fn.readfile(p1)
+
+        local p2, b2, fp2 = fixture_file(lines, '_asc.txt')
+        await_apply_with(net_negative_input(p2, fp2), drivers.accept_all_ascending)
+        local ascending = vim.fn.readfile(p2)
+
+        assert.is.equal(table.concat(botup, '\n'), table.concat(ascending, '\n'))
+
+        cleanup_fixture(p1, b1)
+        cleanup_fixture(p2, b2)
+    end)
+
+    -- An insert (net +1) above a later replace, mixing op kinds. The insert
+    -- is a zero-width position { N, N-1 } pre-widen; this confirms the
+    -- mixed-kind batch composes correctly under the production traversal.
+    it('insert above a later replace does not drift it (ascending+offset)', function()
+        local path, bufnr, fp =
+            fixture_file({ 'one', 'two', 'three', 'four', 'five' }, '_mix.txt')
+        local response = await_apply_with({
+            ops = {
+                { kind = 'insert', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'before',
+                             of = { by = 'line_range', start = 2, ['end'] = 2 } },
+                  content = 'inserted' },
+                { kind = 'replace_range', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'line_range', start = 4, ['end'] = 4 },
+                  content = 'FOUR' },
+            },
+        }, drivers.accept_all_ascending)
+        assert.is.equal('applied', response.status)
+        assert.is.equal(2, #response.applied)
+
+        -- Expected: 'inserted' before line 2, original line 4 ('four') → 'FOUR'.
+        local on_disk = vim.fn.readfile(path)
+        assert.is.equal('one',      on_disk[1])
+        assert.is.equal('inserted', on_disk[2])
+        assert.is.equal('two',      on_disk[3])
+        assert.is.equal('three',    on_disk[4])
+        assert.is.equal('FOUR',     on_disk[5])   -- the load-bearing line
+        assert.is.equal('five',     on_disk[6])
+        assert.is.equal(6,          #on_disk)
+
+        cleanup_fixture(path, bufnr)
+    end)
+end)
+

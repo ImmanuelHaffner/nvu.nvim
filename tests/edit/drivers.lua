@@ -16,6 +16,10 @@
 ---     only the accepted blocks. Caller supplies `{ [block_id|op_index] =
 ---     'accept'|'reject' }`. The mixed acceptance path is where the
 ---     applier's `classify_outcome` does its most interesting work.
+---   * `accept_all_ascending` — like `accept_all`, but applies blocks the
+---     way mcphub's `EditUI:_apply_all_changes` does (ascending sort +
+---     running line offset) instead of bottom-up. Used to pin that the
+---     two traversals agree byte-for-byte on net-line-delta batches.
 ---   * `cancel_at(file_path)` — factory returning a driver that reports
 ---     `status = 'cancelled'` for one specific file. Useful for testing
 ---     the `not_attempted` cascade.
@@ -66,6 +70,89 @@ local function apply_blocks(bufnr, blocks)
         vim.api.nvim_buf_set_lines(bufnr, start_0, end_excl, false, b.replace_lines)
     end
 end
+
+--- Apply blocks the way mcphub's `EditUI:_apply_all_changes` does: sort
+--- **ascending** by `start_line`, apply top-down, and carry a running
+--- `base_line_offset` so each block's planner (pre-edit) line numbers are
+--- shifted by the net line delta of every block applied before it.
+---
+--- This is deliberately the *opposite* traversal of `apply_blocks` above
+--- (which goes bottom-up and needs no offset). It exists to pin the
+--- assumption that mcphub's offset-compensation strategy produces a
+--- byte-identical result to the bottom-up strategy — i.e. that a batch of
+--- ops with a net line-count change does not drift later ops. We reproduce
+--- mcphub's algorithm here rather than import `EditUI` so the spec stays
+--- inside the `tests/edit/` module boundary (no mcphub imports). If this
+--- ever diverges from `edit_ui.lua:_apply_all_changes`, the real-EditUI
+--- smoke is the backstop.
+---
+--- @param bufnr  integer
+--- @param blocks nvu.edit.applier.Block[]
+local function apply_blocks_ascending_with_offset(bufnr, blocks)
+    local ordered = {}
+    for i, b in ipairs(blocks) do ordered[i] = b end
+    table.sort(ordered, function(a, b)
+        return a.range.start_line < b.range.start_line
+    end)
+
+    local base_line_offset = 0
+    for _, b in ipairs(ordered) do
+        local s, e = b.range.start_line, b.range.end_line
+        local start_0, end_excl, original_span
+        if e < s then
+            -- Zero-width position { s, s-1 }: insert at line s, spans 0 lines.
+            start_0, end_excl, original_span = s - 1, s - 1, 0
+        else
+            start_0, end_excl, original_span = s - 1, e, e - s + 1
+        end
+        start_0  = start_0  + base_line_offset
+        end_excl = end_excl + base_line_offset
+        vim.api.nvim_buf_set_lines(bufnr, start_0, end_excl, false, b.replace_lines)
+        base_line_offset = base_line_offset + (#b.replace_lines - original_span)
+    end
+end
+
+--- Ascending-with-offset synthetic driver. Conforms to the `drive_file`
+--- contract. Identical to `accept_all` except it applies blocks via
+--- `apply_blocks_ascending_with_offset` (mirroring mcphub's traversal)
+--- rather than the bottom-up `apply_blocks`. Reports every block as
+--- `'accepted'`.
+---
+--- @param request nvu.edit.applier.FileRequest
+--- @param file_cb fun(outcome: nvu.edit.applier.FileOutcome)
+function M.accept_all_ascending(request, file_cb)
+    local ok, err = pcall(function()
+        apply_blocks_ascending_with_offset(request.bufnr, request.blocks)
+        if vim.bo[request.bufnr].modified then
+            vim.api.nvim_buf_call(request.bufnr, function()
+                vim.cmd.write{ args = { request.file_path }, mods = { silent = true } }
+            end)
+        end
+    end)
+
+    local per_block = {}
+    if ok then
+        for _, b in ipairs(request.blocks) do per_block[b.block_id] = 'accepted' end
+    end
+
+    vim.schedule(function()
+        if ok then
+            file_cb{
+                status     = 'completed',
+                per_block  = per_block,
+                ui_summary = string.format('accept_all_ascending: applied %d block(s) to %s',
+                    #request.blocks, request.file_path),
+            }
+        else
+            file_cb{
+                status        = 'cancelled',
+                cancel_reason = 'accept_all_ascending driver failed: ' .. tostring(err),
+                per_block     = {},
+            }
+        end
+    end)
+end
+
 
 --- Accept-all synthetic driver. Conforms to the `drive_file` contract from
 --- `nvu.edit.applier.apply_plan`.
