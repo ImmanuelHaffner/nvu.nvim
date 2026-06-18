@@ -276,7 +276,7 @@ local op_schema = {
 -- Top-level request schema
 --------------------------------------------------------------------------------
 
-local input_schema = {
+local apply_edit_input_schema = {
     type = 'object',
     properties = {
         ops = {
@@ -301,7 +301,7 @@ local input_schema = {
 -- Tool description (terse; the protocol is documented through the schema)
 --------------------------------------------------------------------------------
 
-local tool_description = [[
+local apply_edit_description = [[
 Apply a batch of structured edits to existing files. Plan-phase
 failures are atomic — if any anchor fails to resolve, no buffer is
 touched. The user then reviews each hunk and may accept or reject
@@ -309,13 +309,29 @@ individually; outcomes are reported per-op in `applied[]` / `rejected[]`.
 
 Each op selects a location with an `anchor` (by `line_range`,
 `unique_text`, or `before`/`after`/`inside` a base anchor) and either
-replaces, inserts, or deletes. Content for replace/insert goes inline in
-`content` for short single-line text, or by reference in
-`content_ref` → `contents[label]` for multi-line bulk.
+replaces, inserts, or deletes.
+
+`replace_range`, `insert`, and `delete_range` are line-granular: their
+anchors select whole line(s), and they replace, insert, or remove whole
+lines. A `unique_text` anchor only *locates* the line(s); it does not
+narrow `replace_range` to the matched substring. So for these ops
+`content` must be the complete new line(s), including any unchanged text
+on the line.
+
+Content for replace/insert goes inline in `content` for short text, or
+by reference in `content_ref` → `contents[label]` for multi-line bulk.
+
+Indentation: the default `indent: "match_anchor"` prepends the anchor
+line's leading whitespace to each line of `content` (write `content`
+starting at column 0; its internal relative indentation is preserved and
+the block is shifted to the anchor's depth). Use `indent: "preserve"` to
+insert `content` byte-for-byte — preferable for a multi-line
+`replace_range` over a mixed-indent region, where one prefix does not fit
+every line. Blank content lines stay blank.
 
 On ambiguity or miss, the response returns a structured failure with
 candidate ranges and a hint — no fuzzy guessing, no silent wrong-location
-edits. Reindentation defaults to matching the anchor's leading whitespace.
+edits.
 
 Use this for *editing inside existing files*. For file create / delete /
 rename, use `neovim__write_file`, `neovim__delete_items`,
@@ -329,8 +345,8 @@ rename, use `neovim__write_file`, `neovim__delete_items`,
 --- @type MCPTool
 local apply_edit_tool = {
     name = 'apply_edit',
-    description = tool_description,
-    inputSchema = input_schema,
+    description = apply_edit_description,
+    inputSchema = apply_edit_input_schema,
     handler = function(req, res)
         -- The engine is async: `edit.apply` takes the request, a per-file
         -- driver, and a completion callback. The driver is the mcphub-side

@@ -564,8 +564,8 @@ local function validate_indent(op, op_path, op_index, warnings, errors)
             expected = '"match_anchor" | "preserve" | "detect"',
             got = op.indent,
             op_index = op_index,
-            hint = '"match_anchor" (default) reindents to align with the anchor; '
-                .. '"preserve" keeps your bytes verbatim; '
+            hint = '"match_anchor" (default) prepends the anchor line\'s leading whitespace to each '
+                .. 'content line; "preserve" keeps your bytes verbatim; '
                 .. '"detect" is reserved but currently falls back to "match_anchor"',
         }))
     return nil

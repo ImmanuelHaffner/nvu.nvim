@@ -85,6 +85,7 @@ local file_record = require'nvu.edit.file_record'
 local anchors     = require'nvu.edit.anchors'
 local fingerprint = require'nvu.edit.fingerprint'
 local schema      = require'nvu.edit.schema'
+local indent      = require'nvu.edit.indent'
 
 local M = {}
 
@@ -269,6 +270,16 @@ local function resolve_anchors(ops, contents, records)
                     lop.ranges = result.ranges
                 else
                     lop.range = result  -- single ResolvedRange
+                end
+                -- Apply the `match_anchor` reindentation rule. Only
+                -- content-producing ops with a single resolved range are
+                -- eligible: `delete_range` has no content, and the
+                -- multi-range `occurrence:"all"` shape is delete-only.
+                -- `match_anchor` is also where `detect` lands (the schema
+                -- downgrades `detect` to `match_anchor` with a warning);
+                -- `preserve` keeps content verbatim.
+                if lop.content ~= nil and lop.range ~= nil and lop.indent == 'match_anchor' then
+                    lop.content = indent.reindent(lop.content, rec, lop.range)
                 end
                 located[#located + 1] = lop
             end

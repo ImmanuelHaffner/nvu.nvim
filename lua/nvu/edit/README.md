@@ -244,6 +244,12 @@ Replace the lines covered by the anchor with new content.
 }
 ```
 
+`replace_range` is line-granular: the anchor selects whole line(s), and
+all of them are replaced by `content`. A `unique_text` anchor only
+*locates* the line(s) — it does not narrow the replacement to the matched
+substring. So `content` must be the complete new line(s), including any
+unchanged text on the line.
+
 #### `insert`
 
 Insert new content at a zero-width position. Requires a positional
@@ -314,14 +320,17 @@ Each op may also carry an `indent` mode:
 
 | `indent`        | Meaning                                                              |
 | --------------- | -------------------------------------------------------------------- |
-| `match_anchor`  | (default) Preserve the leading whitespace of the line the anchor resolved to and apply it to every new line. |
+| `match_anchor`  | (default) Prepend the leading whitespace of the anchor line to every non-blank line of `content`. Write `content` starting at column 0; its internal relative indentation is preserved and the whole block is shifted to the anchor's depth. Blank lines stay blank. |
 | `preserve`      | Insert `content` verbatim. The caller has already indented correctly. |
 | `detect`        | Currently parsed and accepted but downgraded to `match_anchor` with a warning; reserved for a future `.editorconfig`/treesitter-driven mode. |
 
-The current applier passes content through verbatim regardless of
-`indent` — the field is accepted by the schema for forward compatibility,
-but the indentation algorithm is deferred. Pre-indent your content for
-now.
+`match_anchor` applies one prefix — the anchor line's — to every content
+line. That is ideal for a single-line replace or an insert, where you
+want a column-0 block placed at the anchor's depth. For a multi-line
+`replace_range` over a region whose lines are indented differently from
+each other, prefer `indent: "preserve"` and supply the exact bytes: one
+shared prefix cannot fit lines at different depths. `match_anchor` does
+not convert between tabs and spaces — the prefix is applied as raw bytes.
 
 ### Baseline fingerprints
 
@@ -605,11 +614,16 @@ the entire content is closer to "delete the file", which is what
 refuse with `anchor_not_found` rather than guessing. Re-read the file
 and re-anchor.
 
-### Indentation is verbatim
+### Indentation is whitespace-only, not semantic
 
-The `indent` field is accepted for forward compatibility but currently
-has no effect — content is inserted exactly as supplied. Pre-indent
-your replacement and insertion content.
+`indent: "match_anchor"` prepends the anchor line's leading whitespace to
+each content line; it does not understand syntax. It will not infer that
+an insert after an opening `(` should sit one level deeper, nor convert
+between tabs and spaces (the prefix is applied as raw bytes). For content
+the engine cannot indent correctly this way — a multi-line `replace_range`
+over a mixed-indent region, or an insert that must dedent — use
+`indent: "preserve"` and supply the exact bytes. A future `detect` mode is
+reserved for `.editorconfig`/treesitter-driven re-indentation.
 
 ### Per-file refusal, not batch-level atomicity across files
 
