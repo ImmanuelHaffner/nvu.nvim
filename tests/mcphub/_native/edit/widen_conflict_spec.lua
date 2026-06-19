@@ -129,7 +129,7 @@ describe('widen-introduced range conflict', function()
             ops = {
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                  content = 'B-NEW' },
+                  content = 'B-NEW', indent = 'match_anchor' },
                 { kind = 'delete_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 3, ['end'] = 3 } },
             },
@@ -184,7 +184,7 @@ describe('widen-introduced range conflict', function()
             ops = {
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                  content = 'B-NEW' },
+                  content = 'B-NEW', indent = 'match_anchor' },
                 { kind = 'delete_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 4, ['end'] = 4 } },
             },

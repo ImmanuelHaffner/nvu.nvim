@@ -293,7 +293,7 @@ describe('nvu.edit.schema', function()
             local ok, parsed = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
                     anchor = { by = 'after', of = { by = 'line_range', start = 5, ['end'] = 5 } },
-                    content = 'x' } }
+                    content = 'x', indent = 'match_anchor' } }
             }
             assert.is_true(ok)
             assert.is.equal('after', parsed.ops[1].anchor.by)
@@ -307,7 +307,7 @@ describe('nvu.edit.schema', function()
                         anchor = { by = 'inside',
                                    of = { by = 'line_range', start = 5, ['end'] = 10 },
                                    at = at },
-                        content = 'x' } }
+                        content = 'x', indent = 'match_anchor' } }
                 }
                 assert.is_true(ok)
                 assert.is.equal(at, parsed.ops[1].anchor.at)
@@ -339,7 +339,7 @@ describe('nvu.edit.schema', function()
             for _, kind in ipairs{'replace_range', 'delete_range'} do
                 local op = { kind = kind, path = 'f',
                     anchor = { by = 'line_range', start = 5, ['end'] = 5 } }
-                if kind == 'replace_range' then op.content = 'x' end
+                if kind == 'replace_range' then op.content = 'x'; op.indent = 'match_anchor' end
                 local ok = helpers.validate{ ops = { op } }
                 assert.is_true(ok, 'expected ' .. kind .. ' to accept a bare base anchor')
             end
@@ -413,7 +413,7 @@ describe('nvu.edit.schema', function()
             local ok, parsed = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                    content_ref = 'helper' } },
+                    content_ref = 'helper', indent = 'match_anchor' } },
                 contents = { helper = 'x' },
             }
             assert.is_true(ok)
@@ -436,14 +436,23 @@ describe('nvu.edit.schema', function()
 
     ----------------------------------------------------------------
     describe('indent', function()
-        it('defaults to match_anchor when omitted', function()
-            local ok, parsed = helpers.validate{
+        it('is required on content-producing ops; omitting it is missing_field', function()
+            local ok, errors = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content = 'x' } }
             }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].indent', schema.ERROR_REASONS.missing_field)
+        end)
+
+        it('is NOT required on delete_range (it carries no content)', function()
+            local ok, parsed = helpers.validate{
+                ops = { { kind = 'delete_range', path = 'f',
+                    anchor = { by = 'line_range', start = 1, ['end'] = 1 } } }
+            }
             assert.is_true(ok)
-            assert.is.equal('match_anchor', parsed.ops[1].indent)
+            assert.is_nil(parsed.ops[1].indent)
         end)
 
         it('accepts match_anchor / preserve', function()
@@ -516,7 +525,7 @@ describe('nvu.edit.schema', function()
                 ops = {
                     { kind = 'replace_range', path = 'lua/foo.lua',
                       anchor = { by = 'unique_text', text = 'local x = 1' },
-                      content = 'local x = 2' },
+                      content = 'local x = 2', indent = 'match_anchor' },
                     { kind = 'insert', path = 'lua/foo.lua',
                       anchor = { by = 'before', of = { by = 'line_range', start = 10, ['end'] = 10 } },
                       content_ref = 'helper', indent = 'preserve' },

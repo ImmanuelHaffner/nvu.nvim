@@ -438,9 +438,16 @@ re-derive the design from scratch.
 
 ### Indentation: `detect` mode
 
-`indent` is accepted by the schema with three modes: `match_anchor`
-(default), `preserve`, and `detect`. The first two are implemented;
-`detect` currently downgrades to `match_anchor`.
+`indent` is accepted by the schema with three modes: `match_anchor`,
+`preserve`, and `detect`. The first two are implemented; `detect`
+currently downgrades to `match_anchor`. The field is **required** on
+every content-producing op (`replace_range`, `insert`) — there is no
+schema default. Real bake-in showed an LLM would leave `indent` implicit
+(inheriting the old `match_anchor` default) while *also* hand-indenting
+`content`, doubling the indentation. Forcing an explicit choice between
+"I wrote `content` at column 0, you indent it" (`match_anchor`) and "I
+indented it myself, insert verbatim" (`preserve`) removes that footgun.
+`delete_range` carries no content and takes no `indent`.
 
 `match_anchor` is implemented in `lua/nvu/edit/indent.lua` (pure module)
 and wired into the planner's anchor-resolution step. The algorithm is
@@ -458,8 +465,8 @@ does not fit every line.
 
 Still deferred: `detect` (infer the indent from `.editorconfig`,
 treesitter, or a content heuristic). Trigger: real-usage signal that
-the `match_anchor` default is wrong often enough to justify the
-complexity.
+neither `match_anchor` nor `preserve` fits common cases often enough to
+justify the complexity.
 
 ### Event-driven diagnostic settle
 

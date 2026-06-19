@@ -77,7 +77,7 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                      content = 'TWO-NEW' },
+                      content = 'TWO-NEW', indent = 'match_anchor' },
                     { kind = 'delete_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 } },
                 },
@@ -113,7 +113,7 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A-NEW' },
+                      content = 'A-NEW', indent = 'match_anchor' },
                 },
             }, drivers.reject_all)
 
@@ -139,13 +139,13 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'ONE-NEW' },
+                      content = 'ONE-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 3, ['end'] = 3 },
-                      content = 'THREE-NEW' },
+                      content = 'THREE-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 4, ['end'] = 4 },
-                      content = 'FOUR-NEW' },
+                      content = 'FOUR-NEW', indent = 'match_anchor' },
                 },
             }, drivers.make_selective{ [1] = 'accept', [2] = 'reject', [3] = 'accept' })
 
@@ -179,10 +179,10 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A-NEW' },
+                      content = 'A-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                      content = 'B-NEW' },
+                      content = 'B-NEW', indent = 'match_anchor' },
                 },
             }, drivers.make_selective{ [1] = 'accept', [2] = 'accept' })
 
@@ -200,10 +200,10 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A-NEW' },
+                      content = 'A-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                      content = 'B-NEW' },
+                      content = 'B-NEW', indent = 'match_anchor' },
                 },
             }, drivers.make_selective{ [1] = 'reject', [2] = 'reject' })
 
@@ -223,7 +223,7 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                      content = 'B-NEW' },
+                      content = 'B-NEW', indent = 'match_anchor' },
                 },
             }, drivers.make_selective{ [1] = 'partial' })
 
@@ -245,10 +245,10 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A-NEW' },
+                      content = 'A-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                      content = 'B-NEW' },
+                      content = 'B-NEW', indent = 'match_anchor' },
                 },
             }, drivers.make_selective{ [1] = 'accept', [2] = 'partial' })
 
@@ -272,10 +272,10 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path_a, baseline_fingerprint = fp_a,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A1-NEW' },
+                      content = 'A1-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path_b, baseline_fingerprint = fp_b,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'B1-NEW' },
+                      content = 'B1-NEW', indent = 'match_anchor' },
                 },
             }, drivers.cancel_at(path_a))
 
@@ -313,13 +313,13 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path_a, baseline_fingerprint = fp_a,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A1-NEW' },
+                      content = 'A1-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path_b, baseline_fingerprint = fp_b,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'B1-NEW' },
+                      content = 'B1-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path_c, baseline_fingerprint = fp_c,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'C1-NEW' },
+                      content = 'C1-NEW', indent = 'match_anchor' },
                 },
             }, drivers.cancel_at(path_b))
 
@@ -370,7 +370,7 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'X' },
+                      content = 'X', indent = 'match_anchor' },
                 },
             }, driver)
 
@@ -393,7 +393,7 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A' },
+                      content = 'A', indent = 'match_anchor' },
                 },
             }, drivers.accept_all)
 
@@ -430,7 +430,7 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A-NEW' },
+                      content = 'A-NEW', indent = 'match_anchor' },
                 },
             }, driver)
 
@@ -479,10 +479,10 @@ describe('apply_plan with synthetic drivers', function()
                 ops = {
                     { kind = 'replace_range', path = path_a, baseline_fingerprint = fp_a,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'A1-NEW' },
+                      content = 'A1-NEW', indent = 'match_anchor' },
                     { kind = 'replace_range', path = path_b, baseline_fingerprint = fp_b,
                       anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                      content = 'B1-NEW' },
+                      content = 'B1-NEW', indent = 'match_anchor' },
                 },
             }, driver)
 

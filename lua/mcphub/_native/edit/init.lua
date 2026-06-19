@@ -185,7 +185,7 @@ local replace_range_schema = {
         indent               = indent_schema,
         baseline_fingerprint = baseline_fingerprint_schema,
     },
-    required = { 'kind', 'path', 'anchor' },
+    required = { 'kind', 'path', 'anchor', 'indent' },
     additionalProperties = false,
     allOf = { content_xor_schema },
 }
@@ -201,7 +201,7 @@ local insert_schema = {
         indent               = indent_schema,
         baseline_fingerprint = baseline_fingerprint_schema,
     },
-    required = { 'kind', 'path', 'anchor' },
+    required = { 'kind', 'path', 'anchor', 'indent' },
     additionalProperties = false,
     allOf = { content_xor_schema },
 }
@@ -330,40 +330,41 @@ CONTENT for replace/insert is supplied as exactly one of `content` (inline, for 
 
 BATCH ORDERING: every op in one call is resolved against the SAME original file (the snapshot your `baseline_fingerprint` pins), then all are applied together with line-shift bookkeeping handled internally. Line numbers always refer to that original file: an earlier op that grows or shrinks the file does NOT move the numbers a later op should use. Submit ops in any order with original line numbers throughout; do NOT pre-sort ops descending or hand-adjust line numbers to compensate for other edits in the batch.
 
-INDENTATION: the default `indent: "match_anchor"` prepends the anchor span's leading whitespace (taken from its first line) to each content line — write `content` at column 0 and its internal relative indentation is preserved while the block is shifted to the anchor's depth; blank lines stay blank. Use `indent: "preserve"` to insert `content` byte-for-byte, which is the right choice for a multi-line `replace_range` over a mixed-indent region where a single prefix does not fit every line.
+INDENTATION: `replace_range` and `insert` REQUIRE an explicit `indent`, because the engine cannot tell whether you already indented `content` yourself. Choose by how you wrote `content`. `indent: "match_anchor"` prepends the anchor span's leading whitespace (taken from its first line) to each content line, so write `content` at column 0 — its internal relative indentation is preserved while the block is shifted to the anchor's depth, and blank lines stay blank. `indent: "preserve"` inserts `content` byte-for-byte, so write the full leading whitespace yourself; this is also the right choice for a multi-line `replace_range` over a mixed-indent region where a single prefix does not fit every line. Do not combine the two by hand: choosing `match_anchor` AND indenting `content` yourself doubles the indentation, the most common failure here.
 
 EXAMPLES (anchors abbreviated; each op also needs `path` and `baseline_fingerprint`):
 
-  Replace lines 10–12 with new text:
+  Replace lines 10–12, letting the engine indent (content written at column 0):
     { kind: replace_range,
       anchor: { by: line_range, start: 10, end: 12 },
-      content: "..." }
+      content: "...", indent: "match_anchor" }
 
-  Rewrite one whole line located by its text (content is the WHOLE line):
+  Rewrite one whole line located by its text (content is the WHOLE line, already indented — so preserve it verbatim):
     { kind: replace_range,
       anchor: { by: unique_text, text: "  let total = subtotal" },
-      content: "  let total = subtotal + tax" }
+      content: "  let total = subtotal + tax", indent: "preserve" }
 
-  Insert a guard at the start of a function body. The multi-line span is unique where `if x > 42 then` alone is not, and `at: start` lands the insert just after the signature line:
+  Insert a guard at the start of a function body. The multi-line span is unique where `if x > 42 then` alone is not, and `at: start` lands the insert just after the signature line. The content is already indented to its target column, so preserve:
     { kind: insert,
       anchor: { by: inside, at: start,
                 of: { by: unique_text,
                       text: "function foo(x)\n    if x > 42 then" } },
-      content: "    if x == nil then return 'dang' end" }
+      content: "    if x == nil then return 'dang' end", indent: "preserve" }
 
-  Insert a line above a uniquely-identified line:
+  Insert a line above a uniquely-identified line, written at column 0 for the engine to indent:
     { kind: insert,
       anchor: { by: before, of: { by: unique_text, text: "return result" } },
-      content: "result = normalize(result)" }
+      content: "result = normalize(result)", indent: "match_anchor" }
 
-  Delete a block by line range:
+  Delete a block by line range (no content, no indent):
     { kind: delete_range, anchor: { by: line_range, start: 40, end: 47 } }
 
   Two edits in one call, original line numbers, any order:
     [ { kind: replace_range, anchor: { by: line_range, start: 3, end: 3 },
-        content: "..." },
+        content: "...", indent: "match_anchor" },
       { kind: insert, anchor: { by: after,
-          of: { by: line_range, start: 20, end: 20 } }, content: "..." } ]
+          of: { by: line_range, start: 20, end: 20 } },
+        content: "...", indent: "preserve" } ]
 ]]
 --------------------------------------------------------------------------------
 

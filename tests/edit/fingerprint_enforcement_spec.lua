@@ -26,6 +26,7 @@ local function op(extra)
         path   = '/some/file',
         anchor = lr(1, 1),
         content = 'NEW',
+        indent  = 'match_anchor',
     }
     for k, v in pairs(extra or {}) do o[k] = v end
     return o

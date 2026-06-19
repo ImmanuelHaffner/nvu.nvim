@@ -545,7 +545,32 @@ end
 
 --- Validate the `indent` field on a content-producing op. Returns parsed value.
 local function validate_indent(op, op_path, op_index, warnings, errors)
-    if op.indent == nil then return 'match_anchor' end
+    -- `indent` is REQUIRED on every content-producing op. The field forces the
+    -- caller to make a conscious, explicit choice between two incompatible
+    -- mental models, rather than silently inheriting a default it did not
+    -- reason about:
+    --   * "match_anchor" — the caller writes `content` at column 0 and the
+    --     engine prepends the anchor line's leading whitespace.
+    --   * "preserve"     — the caller has already indented `content` itself and
+    --     the engine inserts the bytes verbatim.
+    -- In practice an LLM left to a default would leave `indent` unset (taking
+    -- match_anchor) while ALSO hand-indenting the content — yielding doubled
+    -- indentation. Requiring the field eliminates that footgun: the caller
+    -- cannot stay silent about which side owns the indentation.
+    if op.indent == nil then
+        table.insert(errors, err(op_path .. '.indent', M.ERROR_REASONS.missing_field,
+            '`indent` is required on this op',
+            {
+                expected = '"match_anchor" | "preserve" | "detect"',
+                op_index = op_index,
+                hint = 'choose explicitly: "match_anchor" if you wrote `content` at column 0 '
+                    .. 'and want the anchor line\'s indentation prepended; "preserve" if you '
+                    .. 'already indented `content` yourself and want it inserted verbatim. '
+                    .. 'Pick the one matching how you wrote `content`: "match_anchor" plus '
+                    .. 'already-indented content incorrectly doubles the indentation.',
+            }))
+        return nil
+    end
     if op.indent == 'match_anchor' or op.indent == 'preserve' then
         return op.indent
     end

@@ -79,6 +79,7 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
                     baseline_fingerprint = fp,
                     anchor = { by = 'line_range', start = 2, ['end'] = 2 },
                     content = 'BETA',
+                    indent = 'match_anchor',
                 },
             },
         }
@@ -102,11 +103,11 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
             ops = {
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                  content = 'TWO-a\nTWO-b' },
+                  content = 'TWO-a\nTWO-b', indent = 'match_anchor' },
                 { kind = 'insert', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'before',
                              of = { by = 'line_range', start = 4, ['end'] = 4 } },
-                  content = 'INSERTED' },
+                  content = 'INSERTED', indent = 'match_anchor' },
                 { kind = 'delete_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 1, ['end'] = 1 } },
             },
@@ -132,7 +133,7 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
                 -- Missing baseline_fingerprint → schema rejects.
                 { kind = 'replace_range', path = '/tmp/nonexistent',
                   anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                  content = 'x' },
+                  content = 'x', indent = 'match_anchor' },
             },
         }
         assert.is.equal('failed', response.status)
@@ -150,7 +151,7 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
             ops = {
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                  content = 'never_applied' },
+                  content = 'never_applied', indent = 'match_anchor' },
             },
         }
         assert.is.equal('failed', response.status)
@@ -170,10 +171,10 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
             ops = {
                 { kind = 'replace_range', path = path_a, baseline_fingerprint = fp_a,
                   anchor = { by = 'line_range', start = 1, ['end'] = 1 },
-                  content = 'A1-edited' },
+                  content = 'A1-edited', indent = 'match_anchor' },
                 { kind = 'replace_range', path = path_b, baseline_fingerprint = fp_b,
                   anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                  content = 'B2-edited' },
+                  content = 'B2-edited', indent = 'match_anchor' },
             },
         }
         assert.is.equal('applied', response.status)
@@ -219,11 +220,11 @@ describe('nvu.edit.apply line-drift regression', function()
                 -- Replace 1 line (line 2) with 4 lines: net +3.
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 2, ['end'] = 2 },
-                  content = 'two-a\ntwo-b\ntwo-c\ntwo-d' },
+                  content = 'two-a\ntwo-b\ntwo-c\ntwo-d', indent = 'match_anchor' },
                 -- Target a line well below the growth point. Pre-edit line 6.
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 6, ['end'] = 6 },
-                  content = 'SIX' },
+                  content = 'SIX', indent = 'match_anchor' },
             },
         }
     end
@@ -239,7 +240,7 @@ describe('nvu.edit.apply line-drift regression', function()
                 -- Target pre-edit line 6, below the deletion.
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 6, ['end'] = 6 },
-                  content = 'SIX' },
+                  content = 'SIX', indent = 'match_anchor' },
             },
         }
     end
@@ -338,10 +339,10 @@ describe('nvu.edit.apply line-drift regression', function()
                 { kind = 'insert', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'before',
                              of = { by = 'line_range', start = 2, ['end'] = 2 } },
-                  content = 'inserted' },
+                  content = 'inserted', indent = 'match_anchor' },
                 { kind = 'replace_range', path = path, baseline_fingerprint = fp,
                   anchor = { by = 'line_range', start = 4, ['end'] = 4 },
-                  content = 'FOUR' },
+                  content = 'FOUR', indent = 'match_anchor' },
             },
         }, drivers.accept_all_ascending)
         assert.is.equal('applied', response.status)

@@ -58,7 +58,8 @@ A minimal `apply_edit` call that replaces line 2 of a small file:
       "path": "/tmp/example.txt",
       "baseline_fingerprint": "a1b2c3d",
       "anchor": { "by": "line_range", "start": 2, "end": 2 },
-      "content": "the new line 2"
+      "content": "the new line 2",
+      "indent": "match_anchor"
     }
   ]
 }
@@ -121,6 +122,7 @@ require'nvu.edit'.apply(
         baseline_fingerprint = 'a1b2c3d',
         anchor = { by = 'line_range', start = 2, ['end'] = 2 },
         content = 'the new line 2',
+        indent = 'match_anchor',
       },
     },
   },
@@ -260,7 +262,8 @@ Replace the lines covered by the anchor with new content.
   "path": "/tmp/foo.lua",
   "baseline_fingerprint": "a1b2c3d",
   "anchor": { "by": "line_range", "start": 5, "end": 7 },
-  "content": "-- replacement body\nreturn true"
+  "content": "-- replacement body\nreturn true",
+  "indent": "match_anchor"
 }
 ```
 
@@ -281,7 +284,8 @@ modifier on the anchor.
   "path": "/tmp/foo.lua",
   "baseline_fingerprint": "a1b2c3d",
   "anchor": { "by": "before", "of": { "by": "line_range", "start": 1, "end": 1 } },
-  "content": "--- @module foo"
+  "content": "--- @module foo",
+  "indent": "match_anchor"
 }
 ```
 
@@ -335,14 +339,16 @@ bodies stay readable:
       "path": "/tmp/foo.lua",
       "baseline_fingerprint": "a1b2c3d",
       "anchor": { "by": "line_range", "start": 3, "end": 4 },
-      "content_ref": "greet_body"
+      "content_ref": "greet_body",
+      "indent": "preserve"
     },
     {
       "kind": "insert",
       "path": "/tmp/foo.lua",
       "baseline_fingerprint": "a1b2c3d",
       "anchor": { "by": "before", "of": { "by": "line_range", "start": 6, "end": 6 } },
-      "content_ref": "docstring"
+      "content_ref": "docstring",
+      "indent": "match_anchor"
     }
   ]
 }
@@ -352,11 +358,17 @@ bodies stay readable:
 not referenced by any op produces a warning, not an error. A `content_ref`
 that doesn't resolve is a hard error.
 
-Each op may also carry an `indent` mode:
+Every content-producing op (`replace_range`, `insert`) **must** carry an
+`indent` mode — it is required, not optional. `delete_range` has no
+content and takes no `indent`. The field is mandatory because the engine
+cannot tell whether you already indented `content` yourself; forcing an
+explicit choice removes the most common failure, where a caller leaves
+the mode implicit *and* hand-indents the content, doubling the
+indentation.
 
 | `indent`        | Meaning                                                              |
 | --------------- | -------------------------------------------------------------------- |
-| `match_anchor`  | (default) Prepend the leading whitespace of the anchor line to every non-blank line of `content`. Write `content` starting at column 0; its internal relative indentation is preserved and the whole block is shifted to the anchor's depth. Blank lines stay blank. |
+| `match_anchor`  | Prepend the leading whitespace of the anchor line to every non-blank line of `content`. Write `content` starting at column 0; its internal relative indentation is preserved and the whole block is shifted to the anchor's depth. Blank lines stay blank. |
 | `preserve`      | Insert `content` verbatim. The caller has already indented correctly. |
 | `detect`        | Currently parsed and accepted but downgraded to `match_anchor` with a warning; reserved for a future `.editorconfig`/treesitter-driven mode. |
 
