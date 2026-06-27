@@ -12,6 +12,7 @@ M.env = require'nvu.env'
 M.highlight = require'nvu.highlight'
 M.telescope = require'nvu.telescope'
 M.editor = require'nvu.editor'
+M.layout = require'nvu.layout'
 M.llm = require'nvu.llm'
 M.lazy = require'nvu.lazy'
 
