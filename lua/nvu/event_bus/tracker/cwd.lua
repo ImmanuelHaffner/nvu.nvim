@@ -11,46 +11,16 @@
 --- `nvu.event_bus.router` and core Neovim APIs.
 
 local router = require("nvu.event_bus.router")
+local util = require("nvu.event_bus.tracker.util")
 
 local M = {}
-
---- Replace a leading $HOME with `~`. Unlike `nvu.path.shorten_absolute`, this
---- does NOT truncate intermediate directories: a cwd fact must be a path the
---- LLM can act on verbatim, so we keep it whole.
---- @param path string
---- @return string
-local function tildify(path)
-    local home = os.getenv("HOME")
-    if home and home ~= "" and path:sub(1, #home) == home then
-        return "~" .. path:sub(#home + 1)
-    end
-    return path
-end
-
---- Wrap a path as a Markdown inline-code span, sizing the fence so any
---- backticks inside the path are preserved literally. On Unix a filename may
---- contain any byte except NUL and `/`, so a backtick is a legal path byte; a
---- fixed single-backtick fence would break the span. The fence is one backtick
---- longer than the longest run inside the path, padded per the CommonMark rule
---- when the content begins or ends with a backtick.
---- @param path string
---- @return string
-local function code_span(path)
-    local longest = 0
-    for run in path:gmatch("`+") do
-        if #run > longest then longest = #run end
-    end
-    local fence = string.rep("`", longest + 1)
-    local pad = (path:find("^`") or path:find("`$")) and " " or ""
-    return fence .. pad .. path .. pad .. fence
-end
 
 --- Build the human/LLM-ready fact for a DirChanged event.
 --- @param scope string One of "global" | "tabpage" | "window".
 --- @param cwd string The new (resolved) directory.
 --- @return string
 local function format_fact(scope, cwd)
-    local p = code_span(tildify(cwd))
+    local p = util.code_span(util.tildify(cwd))
     if scope == "window" then
         local win = vim.api.nvim_get_current_win()
         local tab = vim.api.nvim_get_current_tabpage()

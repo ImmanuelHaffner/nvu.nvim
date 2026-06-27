@@ -26,6 +26,7 @@ local augroup
 --- All available trackers, keyed by name. Each exposes `attach(augroup)`.
 local TRACKERS = {
     cwd = require("nvu.event_bus.tracker.cwd"),
+    git = require("nvu.event_bus.tracker.git"),
 }
 
 --- Install the event bus.
