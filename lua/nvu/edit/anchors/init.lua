@@ -14,7 +14,7 @@
 ---
 ---   * `line_range`                  → `anchors.line_range.resolve`
 ---   * `unique_text`                 → `anchors.unique_text.resolve`
----   * `before` / `after` / `inside` → `anchors.modifier.resolve`
+---   * `before` / `after` / `between` → `anchors.modifier.resolve`
 ---
 --- ## Note on internal dispatch
 ---
@@ -45,7 +45,7 @@ function M.resolve(anchor, record)
     local by = anchor.by
     if by == 'line_range'  then return line_range.resolve(anchor, record)  end
     if by == 'unique_text' then return unique_text.resolve(anchor, record) end
-    if by == 'before' or by == 'after' or by == 'inside' then
+    if by == 'before' or by == 'after' or by == 'between' then
         return modifier.resolve(anchor, record)
     end
     -- v2 kinds (treesitter, lsp_symbol) are caught upstream by the

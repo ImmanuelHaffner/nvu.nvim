@@ -460,7 +460,7 @@ describe('nvu.edit.anchors.modifier', function()
     --- Build modifier-wrapped anchors. The `base` is the inner parsed anchor.
     local function before(base)         return { by = 'before', of = base }                  end
     local function after_(base)         return { by = 'after',  of = base }                  end
-    local function inside(base, at)     return { by = 'inside', of = base, at = at }         end
+    local function between(bt, at)      return { by = 'between', before_text = bt, after_text = at } end
 
     describe('before / after on a line_range base', function()
         local rec = fr.from_content('t', 'l1\nl2\nl3\nl4\nl5\n')
@@ -494,27 +494,42 @@ describe('nvu.edit.anchors.modifier', function()
         end)
     end)
 
-    describe('inside on a line_range base (documented redundancy)', function()
+    describe('between { before_text, after_text } names the seam directly', function()
         local rec = fr.from_content('t', 'l1\nl2\nl3\nl4\nl5\n')
 
-        it('inside at "start" on {3..3} → {4, 3}', function()
-            local range = assert(modifier.resolve(inside(lr(3, 3), 'start'), rec))
+        it('seam between line 3 and line 4 → {4, 3}', function()
+            local range = assert(modifier.resolve(between('l3', 'l4'), rec))
             assert.are.same({ start_line = 4, end_line = 3 }, range)
         end)
 
-        it('inside at "end" on {3..3} → {3, 2}', function()
-            local range = assert(modifier.resolve(inside(lr(3, 3), 'end'), rec))
-            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        it('seam between line 1 and line 2 → {2, 1}', function()
+            local range = assert(modifier.resolve(between('l1', 'l2'), rec))
+            assert.are.same({ start_line = 2, end_line = 1 }, range)
         end)
 
-        it('inside at "start" on multi-line {2..4} → {3, 2}', function()
-            local range = assert(modifier.resolve(inside(lr(2, 4), 'start'), rec))
-            assert.are.same({ start_line = 3, end_line = 2 }, range)
-        end)
-
-        it('inside at "end" on multi-line {2..4} → {4, 3}', function()
-            local range = assert(modifier.resolve(inside(lr(2, 4), 'end'), rec))
+        it('multi-line before_text: seam after its LAST line', function()
+            -- before_text spans l2..l3 (lines 2-3); after_text is l4 (line 4).
+            -- Block l2\nl3\nl4 matches lines 2..4; seam after l3 → {4, 3}.
+            local range = assert(modifier.resolve(between('l2\nl3', 'l4'), rec))
             assert.are.same({ start_line = 4, end_line = 3 }, range)
+        end)
+
+        it('multi-line after_text: seam before its FIRST line', function()
+            -- before_text is l2 (line 2); after_text spans l3..l4.
+            -- Block l2\nl3\nl4 matches lines 2..4; seam after l2 → {3, 2}.
+            local range = assert(modifier.resolve(between('l2', 'l3\nl4'), rec))
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
+        end)
+
+        it('straddling-uniqueness case: keeps the disambiguating line in the match', function()
+            -- foo/bar is NOT unique; foo/bar/baz IS. Insert after bar by putting
+            -- the disambiguating baz in after_text (below the seam).
+            local rec2 = fr.from_content('t',
+                'foo\nbar\nbaz\nqux\nfoo\nbar\nquux\n')
+            local range = assert(modifier.resolve(between('foo\nbar', 'baz'), rec2))
+            -- Block foo\nbar\nbaz matches lines 1..3; seam after bar (line 2)
+            -- → insert at line 3 → {3, 2}.
+            assert.are.same({ start_line = 3, end_line = 2 }, range)
         end)
     end)
 
@@ -531,13 +546,13 @@ describe('nvu.edit.anchors.modifier', function()
             assert.are.same({ start_line = 3, end_line = 2 }, range)
         end)
 
-        it('inside at "start" { unique_text "MARKER" } → { 3, 2 }', function()
-            local range = assert(modifier.resolve(inside(ut('MARKER'), 'start'), rec))
+        it('between { before_text "MARKER", after_text "after_section" } → { 3, 2 }', function()
+            local range = assert(modifier.resolve(between('MARKER', 'after_section'), rec))
             assert.are.same({ start_line = 3, end_line = 2 }, range)
         end)
 
-        it('inside at "end" { unique_text "MARKER" } → { 2, 1 }', function()
-            local range = assert(modifier.resolve(inside(ut('MARKER'), 'end'), rec))
+        it('between { before_text "before_section", after_text "MARKER" } → { 2, 1 }', function()
+            local range = assert(modifier.resolve(between('before_section', 'MARKER'), rec))
             assert.are.same({ start_line = 2, end_line = 1 }, range)
         end)
 
@@ -599,12 +614,12 @@ describe('nvu.edit.anchors.modifier', function()
             assert.is_falsy(pcall(modifier.resolve, { by = 'before' }, rec))
         end)
 
-        it('rejects inside without `at`', function()
-            assert.is_falsy(pcall(modifier.resolve, { by = 'inside', of = lr(1, 1) }, rec))
+        it('rejects between without `before_text`', function()
+            assert.is_falsy(pcall(modifier.resolve, { by = 'between', after_text = 'x' }, rec))
         end)
 
-        it('rejects inside with at != "start"|"end"', function()
-            assert.is_falsy(pcall(modifier.resolve, { by = 'inside', of = lr(1, 1), at = 'middle' }, rec))
+        it('rejects between without `after_text`', function()
+            assert.is_falsy(pcall(modifier.resolve, { by = 'between', before_text = 'x' }, rec))
         end)
 
         it('rejects a non-FileRecord record', function()
@@ -621,8 +636,8 @@ describe('nvu.edit.anchors.modifier', function()
             local cases = {
                 before(lr(2, 2)),
                 after_(lr(2, 2)),
-                inside(lr(2, 2), 'start'),
-                inside(lr(2, 2), 'end'),
+                between('b', 'c'),
+                between('a', 'b'),
                 before(lr(1, 3)),
                 after_(lr(1, 3)),
             }
@@ -639,7 +654,7 @@ describe('nvu.edit.anchors (dispatcher)', function()
     --- Reuse the helpers defined in the resolver-spec blocks above.
     local function before(base)     return { by = 'before', of = base }              end
     local function after_(base)     return { by = 'after',  of = base }              end
-    local function inside(base, at) return { by = 'inside', of = base, at = at }     end
+    local function between(bt, at)  return { by = 'between', before_text = bt, after_text = at } end
 
     local rec = fr.from_content('t', 'a\nb\nc\nd\ne\n')
 
@@ -674,10 +689,10 @@ describe('nvu.edit.anchors (dispatcher)', function()
             assert.are.same(direct, range)
         end)
 
-        it('inside → modifier.resolve', function()
-            local range, fail = anchors.resolve(inside(lr(2, 4), 'start'), rec)
+        it('between → modifier.resolve', function()
+            local range, fail = anchors.resolve(between('b', 'c'), rec)
             assert.is_nil(fail)
-            local direct = assert(modifier.resolve(inside(lr(2, 4), 'start'), rec))
+            local direct = assert(modifier.resolve(between('b', 'c'), rec))
             assert.are.same(direct, range)
         end)
     end)

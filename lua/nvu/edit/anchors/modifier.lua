@@ -1,21 +1,33 @@
 --- nvu.edit.anchors.modifier — resolver for positional modifier anchors.
 ---
---- Modifiers wrap a base anchor (`line_range`, `unique_text`, ...) and
---- transform its resolved range into a **zero-width position**. They are
---- consumed by `insert` ops — `replace_range` and `delete_range` need
---- ranges, not positions, and the schema rejects modifier-wrapped
---- anchors on those op kinds.
+--- Modifiers resolve to a **zero-width position** consumed by `insert`
+--- ops — `replace_range` and `delete_range` need ranges, not positions,
+--- and the schema rejects modifier-wrapped anchors on those op kinds.
 ---
 --- ## The three modifiers
 ---
---- Given a base anchor that resolves to lines `[S..E]` (inclusive):
+--- | Modifier  | Wraps                     | Position                                   |
+--- |-----------|---------------------------|--------------------------------------------|
+--- | `before`  | a base anchor `of`        | the seam *above* the base span (before S)  |
+--- | `after`   | a base anchor `of`        | the seam *below* the base span (after E)   |
+--- | `between` | two texts before/after_text | the seam *between* the two adjacent texts |
 ---
---- | Modifier             | Resolved range        | Semantics                                |
---- |----------------------|-----------------------|------------------------------------------|
---- | `before`             | `{S,  S - 1}`         | insert above line S (push S down)        |
---- | `after`              | `{E + 1, E}`          | insert below line E (push later down)    |
---- | `inside`, at "start" | `{S + 1, S}`          | insert *after* the opening line          |
---- | `inside`, at "end"   | `{E, E - 1}`          | insert *before* the closing line         |
+--- `before`/`after` pin to the **outer** edges of the span their base
+--- anchor resolves to: `before` → before its first line, `after` → after
+--- its last line. The span is matched purely to be unique; the seam is
+--- always one of its two outer faces.
+---
+--- `between` exists for the case `before`/`after` cannot express: a seam
+--- whose disambiguating context straddles it — some lines *above* the
+--- insertion point and the line that makes the location unique *below*
+--- it (or vice versa). You name the two sides directly: `before_text` is
+--- the text immediately before the seam, `after_text` the text immediately
+--- after. The engine matches `before_text .. "\n" .. after_text` as a
+--- single contiguous block (so the *concatenation* must be unique, not
+--- either side alone) and places the seam at the join. This reuses the
+--- `unique_text` matcher verbatim, so `between` inherits its
+--- `anchor_not_found` / `anchor_ambiguous` reporting (with candidates) for
+--- free.
 ---
 --- ## The zero-width convention
 ---
@@ -25,26 +37,15 @@
 --- directly to `nvim_buf_set_lines(bufnr, start_0, start_0, false, lines)`
 --- (start and end indices equal — pure insertion).
 ---
---- ## `inside` on `line_range`
----
---- `line_range` has no syntactic interior — there is no "opening line"
---- and "closing line" the way a function or a block has. We resolve
---- `inside` on `line_range` to the inner edges anyway, by the same
---- formula as any other base: `at: start` → `{S + 1, S}`, `at: end` →
---- `{E, E - 1}`. The redundancy is deliberate: it keeps `inside`
---- uniformly available across base anchors, and authors
---- who want true block-interior semantics can use the treesitter anchor
---- (v2).
----
 --- ## Multi-range bases (`occurrence: "all"`)
 ---
---- The schema allows `before`/`after`/`inside` to wrap a `unique_text`
---- with `occurrence: "all"`, but the semantics of "insert before every
---- match" are not part of MVP — `insert` ops resolve to a single
---- position. If the base resolver returns the multi-range shape
---- `{ranges = {...}}`, this resolver fails with an invariant assertion.
---- (Real-world demand for multi-position inserts can lift this later;
---- the failure mode for now is "schema accepts, planner refuses".)
+--- The schema allows `before`/`after` to wrap a `unique_text` with
+--- `occurrence: "all"`, but the semantics of "insert before every match"
+--- are not part of MVP — `insert` ops resolve to a single position. If
+--- the base resolver returns the multi-range shape `{ranges = {...}}`,
+--- this resolver fails with an invariant assertion. (Real-world demand
+--- for multi-position inserts can lift this later; the failure mode for
+--- now is "schema accepts, planner refuses".)
 ---
 --- @module "nvu.edit.anchors.modifier"
 
@@ -56,9 +57,8 @@ local M = {}
 --- Dispatch a base anchor to the right resolver.
 ---
 --- This is a small private dispatcher; the planner-side public dispatch
---- will live in `nvu.edit.anchors` (or `anchors/init.lua`) once it
---- exists. Until then, having the table here keeps the modifier module
---- self-contained.
+--- lives in `nvu.edit.anchors`. Duplicating the two-line table here keeps
+--- the modifier module self-contained and avoids a require cycle.
 ---
 --- @param base_anchor table
 --- @param record nvu.edit.FileRecord
@@ -73,39 +73,73 @@ local function resolve_base(base_anchor, record)
     error(string.format('modifier.resolve_base: unknown base anchor kind %q', tostring(by)))
 end
 
---- Compute the resolved zero-width position for a modifier applied to a
---- base range.
+--- Number of lines a (possibly multi-line) string occupies. A string with
+--- no `\n` is one line; each `\n` adds one. A trailing `\n` is not expected
+--- in anchor text (the LLM sends a verbatim slice), but if present it would
+--- count the empty final segment — callers pass the `before_text` side,
+--- which is the text immediately preceding the seam and never ends in `\n`.
 ---
---- @param by string                   'before' | 'after' | 'inside'
---- @param at string|nil               'start' | 'end' (required iff by == 'inside')
+--- @param s string
+--- @return integer
+local function line_count(s)
+    local n = 1
+    for _ in s:gmatch('\n') do n = n + 1 end
+    return n
+end
+
+--- Compute the resolved zero-width position for `before`/`after` applied
+--- to a base range.
+---
+--- @param by string                   'before' | 'after'
 --- @param base nvu.edit.ResolvedRange
 --- @return nvu.edit.ResolvedRange
-local function apply_modifier(by, at, base)
+local function apply_edge(by, base)
     local S, E = base.start_line, base.end_line
     if by == 'before' then
         return { start_line = S, end_line = S - 1 }
     elseif by == 'after' then
         return { start_line = E + 1, end_line = E }
-    elseif by == 'inside' then
-        if at == 'start' then
-            return { start_line = S + 1, end_line = S }
-        elseif at == 'end' then
-            return { start_line = E, end_line = E - 1 }
-        else
-            error('modifier.apply_modifier: inside requires at = "start" or "end", got: ' .. tostring(at))
-        end
     else
-        error('modifier.apply_modifier: unknown modifier `by`: ' .. tostring(by))
+        error('modifier.apply_edge: unknown modifier `by`: ' .. tostring(by))
     end
+end
+
+--- Resolve a `between { before_text, after_text }` modifier.
+---
+--- Matches `before_text .. "\n" .. after_text` as a single contiguous block
+--- via the `unique_text` resolver, then places the seam at the join between
+--- the last line of `before_text` and the first line of `after_text`. The
+--- block must be unique; ambiguity / not-found failures propagate from
+--- `unique_text`.
+---
+--- @param anchor table                { by = 'between', before_text = string, after_text = string }
+--- @param record nvu.edit.FileRecord
+--- @return nvu.edit.ResolvedRange|nil
+--- @return nvu.edit.AnchorFailure|nil
+local function resolve_between(anchor, record)
+    local before_text, after_text = anchor.before_text, anchor.after_text
+    local block = before_text .. '\n' .. after_text
+    local result, fail = unique_text_anchor.resolve({ by = 'unique_text', text = block }, record)
+    if fail ~= nil then
+        -- Echo back the caller's actual `between` shape, not the synthetic
+        -- unique_text we used internally.
+        fail.anchor = anchor
+        return nil, fail
+    end
+    -- The seam falls immediately after `before_text`'s last line.
+    -- `before_text` occupies `[block.start_line .. block.start_line +
+    -- n_before - 1]`, so the insertion line is `block.start_line + n_before`.
+    local n_before = line_count(before_text)
+    local seam_line = result.start_line + n_before
+    return { start_line = seam_line, end_line = seam_line - 1 }, nil
 end
 
 --- Resolve a positional-modifier anchor against a file record.
 ---
---- Returns the same shape as `line_range.resolve`: a single resolved
---- zero-width position on success, or a structured failure on error.
---- Errors from the base resolver are propagated transparently — the
---- caller (planner) sees the failure for the base, with the modifier
---- context preserved in the `anchor` echo-back.
+--- Returns a single resolved zero-width position on success, or a
+--- structured failure on error. Failures from the underlying base /
+--- block match are propagated with `anchor` rewritten to echo back the
+--- caller's full modifier-wrapped form (not the unwrapped internals).
 ---
 --- @param anchor table                Validated parsed modifier anchor.
 --- @param record nvu.edit.FileRecord
@@ -113,16 +147,22 @@ end
 --- @return nvu.edit.AnchorFailure|nil
 function M.resolve(anchor, record)
     assert(type(anchor) == 'table', 'resolve: anchor must be a table')
-    local by = anchor.by
-    assert(by == 'before' or by == 'after' or by == 'inside',
-        'resolve: anchor.by must be a modifier kind (before/after/inside), got: ' .. tostring(by))
-    assert(type(anchor.of) == 'table', 'resolve: anchor.of must be a table (the wrapped base anchor)')
-    if by == 'inside' then
-        assert(anchor.at == 'start' or anchor.at == 'end',
-            'resolve: inside requires at = "start" or "end", got: ' .. tostring(anchor.at))
-    end
     assert(type(record) == 'table' and type(record.n_lines) == 'number',
         'resolve: record must be a FileRecord (n_lines required)')
+
+    local by = anchor.by
+
+    if by == 'between' then
+        assert(type(anchor.before_text) == 'string' and anchor.before_text ~= '',
+            'resolve: between requires a non-empty `before_text` string')
+        assert(type(anchor.after_text) == 'string' and anchor.after_text ~= '',
+            'resolve: between requires a non-empty `after_text` string')
+        return resolve_between(anchor, record)
+    end
+
+    assert(by == 'before' or by == 'after',
+        'resolve: anchor.by must be a modifier kind (before/after/between), got: ' .. tostring(by))
+    assert(type(anchor.of) == 'table', 'resolve: anchor.of must be a table (the wrapped base anchor)')
 
     local result, fail = resolve_base(anchor.of, record)
     if fail ~= nil then
@@ -138,14 +178,13 @@ function M.resolve(anchor, record)
     -- combination at validation time (see `occurrence_all_disallowed`
     -- in schema.lua's per-op validator), so this assertion is a
     -- defence-in-depth tripwire for direct callers that bypass the
-    -- schema layer — it should be unreachable from any LLM-facing
-    -- path.
+    -- schema layer — it should be unreachable from any LLM-facing path.
     assert(result.start_line ~= nil and result.end_line ~= nil,
         'modifier wrapping a multi-range base (occurrence: "all") reached the resolver — '
         .. 'schema validation should have refused this with `occurrence_all_disallowed`. '
         .. 'If you hit this from a direct Lua call, route your input through schema.validate first.')
 
-    return apply_modifier(by, anchor.at, result), nil
+    return apply_edge(by, result), nil
 end
 
 return M

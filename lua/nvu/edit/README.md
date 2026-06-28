@@ -3,7 +3,7 @@
 A replacement for SEARCH/REPLACE-style edit tooling. The LLM submits a batch
 of structured operations against existing files. Each operation locates its
 target with an **anchor** (line range, unique text, or a positional modifier
-around one of those) and either replaces, inserts, or deletes. Ambiguous or
+that places an insertion seam) and either replaces, inserts, or deletes. Ambiguous or
 missing anchors return structured candidates the LLM can act on, not silent
 wrong-location edits. Every operation carries a **baseline fingerprint** of
 the file's content so concurrent modifications between read and apply are
@@ -138,7 +138,8 @@ The `['end'] = ...` form is required because `end` is a Lua keyword.
 
 An anchor selects **where in the file** an operation acts. There are two
 base anchor kinds — `line_range` and `unique_text` — plus three positional
-modifiers (`before`, `after`, `inside`) that wrap a base.
+modifiers: `before` and `after` (which wrap a base anchor) and `between`
+(which names the two texts framing an insertion seam).
 
 #### `line_range`
 
@@ -192,43 +193,49 @@ Use a separate op per match, or pin a specific match with
 
 Lua: `{ by = 'unique_text', text = 'function greet(name)' }`
 
-#### `before`, `after`, `inside`
+#### `before`, `after`, `between`
 
-Wrap a base anchor to produce a zero-width position adjacent to it.
+Wrap a base anchor (`before` / `after`) or name two adjacent texts
+(`between`) to produce a zero-width insertion position.
 
 ```json
 { "by": "before", "of": { "by": "line_range", "start": 5, "end": 5 } }
 ```
 
-This resolves to the position **immediately before line 5**, suitable for
-`insert`. `after` produces the position after; `inside` produces a
-zero-width position at the start or end of the inner range and requires
-an `at` field:
+`before` resolves to the position **immediately before** the base
+anchor's span (above its first line); `after` resolves to the position
+**immediately after** it (below its last line). The wrapped span exists
+only to be located uniquely — the seam is always one of its two outer
+edges. Use these when all the context you need to pin the location sits
+on one side of the insertion point: put that context in the span and
+insert `before` it or `after` it.
 
 ```json
-{ "by": "inside", "of": { "by": "unique_text", "text": "fn foo()" }, "at": "start" }
+{ "by": "between",
+  "before_text": "function foo(x)",
+  "after_text": "    if x > 42 then" }
 ```
 
-`at` must be `"start"` or `"end"`. On a multi-line base anchor (e.g. a
-`unique_text` that matches across lines, or a `line_range` spanning a
-block), `at: "start"` resolves to the position **immediately after the
-opening line**, and `at: "end"` to the position **immediately before
-the closing line** — i.e. positions *inside* the block, suitable for
-inserting an opening or trailing statement within it. On a single-line
-base, `inside` collapses to the same position as `before` / `after`
-(at: start → before; at: end → after).
+`between` names the two sides of the seam directly. `before_text` is the
+existing text immediately **before** the insertion point; `after_text`
+is the existing text immediately **after** it. These are descriptive
+verbatim slices of the file that frame the seam — not directions for
+placing content. The engine matches `before_text` and `after_text` as
+one contiguous block (`before_text` then `after_text` on consecutive
+lines) and inserts at the join between them.
 
-These positions are computed mechanically from the span's edges; the
-engine has no block awareness — `at: "start"` means "after the span's
-first line", not "at the semantic start of a block". You supply the
-context the engine lacks by **choosing the span**: make a `unique_text`
-long enough to (a) match uniquely where a single line would be ambiguous,
-and (b) place its first or last line at the seam where you want to
-insert. Extending an anchor with neighbouring lines both disambiguates
-and frames the position; `before`/`after` pin to the span's outer edges,
-`inside` to its inner positions.
+Use `between` when the context that makes the location unique
+**straddles** the seam — some lines above the insertion point and the
+disambiguating line(s) below it (or vice versa). Because the seam is
+interior to the matched block, `between` is the only modifier that can
+keep both-sides context in the match while still inserting in the middle
+of it. Their **concatenation** must be unique; neither side need be
+unique on its own. Example: to insert after `bar()` where `foo()`/`bar()`
+repeats but `foo()`/`bar()`/`baz()` is unique, use
+`before_text: "foo()\nbar()"`, `after_text: "baz()"` — the seam lands
+after `bar()` while `baz()` stays in the match for uniqueness.
 
-These modifiers may only wrap `line_range` or `unique_text` bases.
+`before`/`after` may only wrap `line_range` or `unique_text` bases.
 Modifier-of-modifier (e.g. `before of before of ...`) is rejected by the
 schema.
 
@@ -237,6 +244,7 @@ is rejected, because an insert into a non-zero-width range would have
 ambiguous semantics.
 
 Lua: `{ by = 'before', of = { by = 'line_range', start = 5, ['end'] = 5 } }`
+Lua: `{ by = 'between', before_text = 'foo()\nbar()', after_text = 'baz()' }`
 
 ### Operations
 

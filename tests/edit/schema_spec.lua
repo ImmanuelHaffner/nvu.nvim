@@ -300,28 +300,38 @@ describe('nvu.edit.schema', function()
             assert.is.equal('line_range', parsed.ops[1].anchor.of.by)
         end)
 
-        it('accepts inside with at="start" or at="end"', function()
-            for _, at in ipairs{'start', 'end'} do
-                local ok, parsed = helpers.validate{
-                    ops = { { kind = 'insert', path = 'f',
-                        anchor = { by = 'inside',
-                                   of = { by = 'line_range', start = 5, ['end'] = 10 },
-                                   at = at },
-                        content = 'x', indent = 'match_anchor' } }
-                }
-                assert.is_true(ok)
-                assert.is.equal(at, parsed.ops[1].anchor.at)
-            end
+        it('accepts between with before_text and after_text', function()
+            local ok, parsed = helpers.validate{
+                ops = { { kind = 'insert', path = 'f',
+                    anchor = { by = 'between',
+                               before_text = 'foo\nbar',
+                               after_text = 'baz' },
+                    content = 'x', indent = 'match_anchor' } }
+            }
+            assert.is_true(ok)
+            assert.is.equal('between', parsed.ops[1].anchor.by)
+            assert.is.equal('foo\nbar', parsed.ops[1].anchor.before_text)
+            assert.is.equal('baz', parsed.ops[1].anchor.after_text)
         end)
 
-        it('rejects inside without `at`', function()
+        it('rejects between without `before_text`', function()
             local ok, errors = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
-                    anchor = { by = 'inside', of = { by = 'line_range', start = 5, ['end'] = 10 } },
-                    content = 'x' } }
+                    anchor = { by = 'between', after_text = 'baz' },
+                    content = 'x', indent = 'match_anchor' } }
             }
             assert.is_false(ok)
-            assert_error(errors, 'ops[0].anchor.at', schema.ERROR_REASONS.wrong_type)
+            assert_error(errors, 'ops[0].anchor.before_text', schema.ERROR_REASONS.wrong_type)
+        end)
+
+        it('rejects between without `after_text`', function()
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'insert', path = 'f',
+                    anchor = { by = 'between', before_text = 'foo' },
+                    content = 'x', indent = 'match_anchor' } }
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].anchor.after_text', schema.ERROR_REASONS.wrong_type)
         end)
 
         it('rejects insert with a bare base anchor (no modifier)', function()

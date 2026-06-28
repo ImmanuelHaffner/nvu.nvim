@@ -264,14 +264,14 @@ local IMPLEMENTED_BASE_ANCHOR_KINDS = {
 }
 
 local MODIFIER_KINDS = {
-    before = true,
-    after  = true,
-    inside = true,
+    before  = true,
+    after   = true,
+    between = true,
 }
 
 local ANCHOR_KIND_OVERVIEW =
     'base anchor kinds: line_range (by line numbers), unique_text (by substring); '
-    .. 'positional modifiers: before / after (line-adjacent), inside (start/end of a block)'
+    .. 'positional modifiers: before / after (wrap a base anchor), between (insert at the seam between two adjacent texts)'
 
 --- Validate a base anchor (resolves to a range). Returns parsed copy on success.
 local function validate_base_anchor(anchor, path, errors, op_index)
@@ -282,7 +282,7 @@ local function validate_base_anchor(anchor, path, errors, op_index)
 
     if not expect_nonempty_string(anchor.by, path .. '.by', errors, {
         op_index = op_index,
-        hint = 'set `by` to one of: line_range, unique_text (MVP), or before / after / inside (positional modifiers)',
+        hint = 'set `by` to one of: line_range, unique_text, or before / after / between (positional modifiers)',
     }) then return nil end
 
     local by = anchor.by
@@ -376,13 +376,30 @@ local function validate_anchor(anchor, path, errors, op_index, require_position)
     if not expect_nonempty_string(anchor.by, path .. '.by', errors, {
         op_index = op_index,
         hint = require_position
-            and 'for `insert`, set `by` to one of: before, after, inside'
-            or 'set `by` to one of the base kinds (line_range, unique_text) or modifiers (before, after, inside)',
+            and 'for `insert`, set `by` to one of: before, after, between'
+            or 'set `by` to one of the base kinds (line_range, unique_text) or modifiers (before, after, between)',
     }) then return nil end
 
     local by = anchor.by
 
     if MODIFIER_KINDS[by] then
+        -- `between` is shaped differently from `before`/`after`: it carries two
+        -- texts (`before_text`/`after_text`) naming the two sides of the seam,
+        -- rather than wrapping a base anchor in `of`.
+        if by == 'between' then
+            if not expect_nonempty_string(anchor.before_text, path .. '.before_text', errors, {
+                op_index = op_index,
+                hint = '`before_text` is the existing text immediately before the insertion seam '
+                    .. '(a verbatim slice of the file); it may span several lines',
+            }) then return nil end
+            if not expect_nonempty_string(anchor.after_text, path .. '.after_text', errors, {
+                op_index = op_index,
+                hint = '`after_text` is the existing text immediately after the insertion seam '
+                    .. '(a verbatim slice of the file); it may span several lines',
+            }) then return nil end
+            return { by = 'between', before_text = anchor.before_text, after_text = anchor.after_text }
+        end
+
         if not expect_table(anchor.of, path .. '.of', errors, {
             op_index = op_index,
             hint = '`of` wraps a base anchor: { by: "after", of: { by: "line_range", start: 10, end: 10 } }',
@@ -391,35 +408,22 @@ local function validate_anchor(anchor, path, errors, op_index, require_position)
         local of_parsed = validate_base_anchor(anchor.of, path .. '.of', errors, op_index)
         if not of_parsed then return nil end
 
-        if by == 'inside' then
-            if anchor.at ~= 'start' and anchor.at ~= 'end' then
-                table.insert(errors, err(path .. '.at', M.ERROR_REASONS.wrong_type,
-                    '`at` must be "start" or "end"',
-                    {
-                        expected = '"start" | "end"',
-                        got = anchor.at,
-                        op_index = op_index,
-                        hint = '"start" inserts immediately after the block opens; "end" inserts immediately before it closes',
-                    }))
-                return nil
-            end
-            return { by = 'inside', of = of_parsed, at = anchor.at }
-        end
         return { by = by, of = of_parsed }
     end
 
     if BASE_ANCHOR_KINDS[by] then
         if require_position then
             table.insert(errors, err(path, M.ERROR_REASONS.bad_modifier_target,
-                'insert requires a positional anchor (before, after, or inside)',
+                'insert requires a positional anchor (before, after, or between)',
                 {
                     expected = 'modifier-wrapped anchor',
                     got = string.format('base anchor (by: %q)', by),
                     op_index = op_index,
                     hint = string.format(
                         'wrap your anchor: { by: "after", of: <your current anchor> }. '
-                        .. 'Use "before"/"after" for line-adjacent positions, '
-                        .. 'or { by: "inside", of: ..., at: "start" | "end" } to insert inside a block.'),
+                        .. 'Use "before"/"after" to insert above/below a base anchor, '
+                        .. 'or { by: "between", above: ..., below: ... } to insert at the seam '
+                        .. 'between two adjacent texts.'),
                 }))
             return nil
         end
@@ -429,7 +433,7 @@ local function validate_anchor(anchor, path, errors, op_index, require_position)
     table.insert(errors, err(path .. '.by', M.ERROR_REASONS.unknown_kind,
         'unknown anchor kind',
         {
-            expected = 'base anchor kind, or before / after / inside',
+            expected = 'base anchor kind, or before / after / between',
             got = by,
             op_index = op_index,
             hint = ANCHOR_KIND_OVERVIEW,

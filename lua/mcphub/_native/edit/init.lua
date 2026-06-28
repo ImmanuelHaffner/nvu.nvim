@@ -40,10 +40,10 @@ local edit_read = require'nvu.edit.read'
 --------------------------------------------------------------------------------
 
 -- An Anchor selects a location or range in a file. Base anchors resolve to a
--- range; positional modifiers (before/after/inside) wrap a base anchor to
--- produce a position. The schema admits a 3-level nesting cap implicitly via
--- `Anchor → Modifier → BaseAnchor`; deeper nesting is unreachable because
--- modifiers only wrap base anchors, not other modifiers.
+-- range; positional modifiers (before/after wrap a base anchor; between names
+-- two adjacent texts) produce a position. The schema admits a 3-level nesting
+-- cap implicitly via `Anchor → Modifier → BaseAnchor`; deeper nesting is
+-- unreachable because modifiers only wrap base anchors, not other modifiers.
 
 local base_anchor_schema = {
     oneOf = {
@@ -118,15 +118,19 @@ local modifier_anchor_schema = {
             required = { 'by', 'of' },
             additionalProperties = false,
         },
-        -- inside: a position interior to a block-like base anchor.
+        -- between: a position at the seam between two adjacent texts. The two
+        -- texts are matched as one contiguous block
+        -- (before_text .. "\n" .. after_text); the seam falls at the join. Use
+        -- this when the context that makes the location unique straddles the
+        -- insertion point.
         {
             type = 'object',
             properties = {
-                by = { type = 'string', const = 'inside' },
-                of = base_anchor_schema,
-                at = { type = 'string', enum = { 'start', 'end' } },
+                by          = { type = 'string', const = 'between' },
+                before_text = { type = 'string', minLength = 1 },
+                after_text  = { type = 'string', minLength = 1 },
             },
-            required = { 'by', 'of', 'at' },
+            required = { 'by', 'before_text', 'after_text' },
             additionalProperties = false,
         },
     },
@@ -315,14 +319,15 @@ The anchor plays one of two roles, depending on the op:
   * For `replace_range` and `delete_range` the anchor IS the edit extent. The op acts on exactly the line(s) `[S..E]` it resolves to and never expands to the surrounding block: anchoring on the first line of a paragraph, function, or list edits only that one line. To act on a whole block the anchor must cover all of its lines (a `line_range` spanning them, or a `unique_text` matching the entire block).
   * For `insert` the anchor must be wrapped in a positional MODIFIER that turns the span into an insertion position; the span's own line(s) are left unchanged and `content` is placed at that position.
 
-MODIFIERS compute a position mechanically from the resolved span's edges — the engine has no block awareness:
+MODIFIERS turn a location into an insertion seam. The seam is named directly, never derived by counting:
 
-  * `before` → just above the span (before line S).
-  * `after`  → just below the span (after line E).
-  * `inside` with `at: "start"` → just after the span's FIRST line.
-  * `inside` with `at: "end"`   → just before the span's LAST line.
+  * `before` → just above a base anchor's span (before its first line).
+  * `after`  → just below a base anchor's span (after its last line).
+  * `between` → at the seam between two adjacent texts you name as `before_text` and `after_text`. The two are matched as one contiguous block (`before_text` then `after_text` on consecutive lines), so their CONCATENATION must be unique — neither side need be unique alone — and the seam falls at the join.
 
-You supply the context the engine lacks by choosing the span: make it long enough (often a multi-line `unique_text`) to (a) match uniquely and (b) place its first or last line at the seam where you want to insert. A single-line anchor is often ambiguous; extending it with neighbouring lines both disambiguates and frames the position. `before`/`after` pin to the OUTER edges of the span; `inside` pins to the INNER positions — use whichever places content where you mean.
+`before`/`after` wrap a base anchor in `of` and pin to one of its OUTER edges; the span exists only to be unique. Use them when all the context you need to identify the location sits on one side of the seam: put that context in the span and insert `before` it or `after` it.
+
+`between` is for when the context that makes the location unique STRADDLES the seam — some existing lines before the insertion point and the disambiguating line(s) after it (or vice versa). You show the seam by splitting the existing text into the part before it (`before_text`) and the part after it (`after_text`); the engine inserts exactly at that cut. These are DESCRIPTIVE slices of the file framing the seam, not directions for placing content. This is the only way to keep both-sides context in the match while still inserting in the middle of it. Example: to insert after `bar()` where `foo()`/`bar()` is not unique but `foo()`/`bar()`/`baz()` is, use `before_text: "foo()\nbar()"`, `after_text: "baz()"`.
 
 These ops are line-granular: anchors resolve to whole lines, and edits add, replace, or remove whole lines. A `unique_text` match selects the whole line(s) it falls on, never just the matched substring — so for `replace_range`, `content` must be the complete new line(s), including any unchanged text on the matched line(s).
 
@@ -344,11 +349,11 @@ EXAMPLES (anchors abbreviated; each op also needs `path` and `baseline_fingerpri
       anchor: { by: unique_text, text: "  let total = subtotal" },
       content: "  let total = subtotal + tax", indent: "preserve" }
 
-  Insert a guard at the start of a function body. The multi-line span is unique where `if x > 42 then` alone is not, and `at: start` lands the insert just after the signature line. The content is already indented to its target column, so preserve:
+  Insert a guard after a function's opening line, where the signature alone is not unique but signature + first body line is. The disambiguating line sits after the seam, so use `between`: `before_text` is the opening line(s), `after_text` is the line the insert must precede. Content already indented, so preserve:
     { kind: insert,
-      anchor: { by: inside, at: start,
-                of: { by: unique_text,
-                      text: "function foo(x)\n    if x > 42 then" } },
+      anchor: { by: between,
+                before_text: "function foo(x)",
+                after_text: "    if x > 42 then" },
       content: "    if x == nil then return 'dang' end", indent: "preserve" }
 
   Insert a line above a uniquely-identified line, written at column 0 for the engine to indent:

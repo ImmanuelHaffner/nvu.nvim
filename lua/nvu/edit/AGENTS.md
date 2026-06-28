@@ -256,8 +256,10 @@ looking for the verbatim text. Caps at 3 candidates with early exit at
 hit #4. Reports `total_matches` as an integer up to 3 or the string
 `">3"`.
 
-**`anchors/modifier.lua`** — wraps a base resolver. Translates
-`before`/`after`/`inside` into zero-width positions on the inner range.
+**`anchors/modifier.lua`** — resolves positional modifiers to zero-width
+insertion positions. `before`/`after` wrap a base resolver and pin to its
+outer edges; `between` matches `before_text .. "\n" .. after_text` as one
+block (reusing the `unique_text` resolver) and places the seam at the join.
 Rejects modifier-of-modifier at validation time.
 
 **`file_record.lua`** — canonical "file as we see it" representation.

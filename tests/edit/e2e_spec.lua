@@ -127,6 +127,39 @@ describe('nvu.edit.apply end-to-end (accept_all driver)', function()
         cleanup_fixture(path, bufnr)
     end)
 
+    it('applies a between insert, placing content at the seam (straddling uniqueness)', function()
+        -- foo/bar is not unique; foo/bar/baz is. Insert after the FIRST bar
+        -- by naming before_text="foo\nbar" and after_text="baz" (the
+        -- disambiguating line sits below the seam).
+        local path, bufnr, fp = fixture_file{
+            'foo', 'bar', 'baz', 'qux', 'foo', 'bar', 'quux' }
+        local response = await_apply{
+            ops = {
+                { kind = 'insert', path = path, baseline_fingerprint = fp,
+                  anchor = { by = 'between',
+                             before_text = 'foo\nbar',
+                             after_text = 'baz' },
+                  content = 'INSERTED', indent = 'preserve' },
+            },
+        }
+        assert.is.equal('applied', response.status)
+        assert.is.equal(1, #response.applied)
+
+        local on_disk = vim.fn.readfile(path)
+        -- INSERTED lands between bar (line 2) and baz (line 3).
+        assert.is.equal('foo',      on_disk[1])
+        assert.is.equal('bar',      on_disk[2])
+        assert.is.equal('INSERTED', on_disk[3])
+        assert.is.equal('baz',      on_disk[4])
+        assert.is.equal('qux',      on_disk[5])
+        assert.is.equal('foo',      on_disk[6])
+        assert.is.equal('bar',      on_disk[7])
+        assert.is.equal('quux',     on_disk[8])
+        assert.is.equal(8,          #on_disk)
+
+        cleanup_fixture(path, bufnr)
+    end)
+
     it('returns failed[] with schema_invalid for malformed input', function()
         local response = await_apply{
             ops = {
