@@ -26,11 +26,16 @@ This library is used by our main Neovim configuration at `~/Documents/dotfiles/n
     │   ├── editor.lua                  # Editor context (buffers, cursor, windows)
     │   ├── llm.lua                     # LLM formatting utilities
     │   ├── lazy.lua                    # lazy.nvim integration (programmatic :Lazy check)
+    │   ├── edit/                       # Structured file-edit engine (powers neovim__apply_edit)
+    │   │   └── init.lua                # Engine entry: apply(input) → response
     │   └── telescope/                  # Telescope integration
     │       ├── init.lua                # Re-exports telescope submodules
     │       ├── utils.lua               # Layout dimension helpers
     │       ├── entry_makers.lua        # Custom entry makers with path shortening
     │       └── previewers.lua          # Custom previewers (buffer, git commit)
+    ├── mcphub/_native/                 # mcphub.nvim adapters (register tools onto its `neovim` server)
+    │   └── edit/
+    │       └── init.lua                # Registers neovim__apply_edit via mcphub.add_tool
     ├── telescope/_extensions/          # Telescope extension
     │   └── adaptive_pickers.lua        # Enhanced pickers with dynamic path shortening
     └── codecompanion/_extensions/      # CodeCompanion extensions
@@ -108,6 +113,20 @@ LLM formatting utilities. Formats editor context for consumption by AI assistant
 Key functions:
 - `format_context(context)` - Format context as Markdown for LLM consumption
 - `get_formatted_context(opts)` - Convenience wrapper that calls `editor.get_context()` and formats it
+
+### `nvu.edit`
+Structured, batch-atomic file-edit engine. Pure Lua, client-agnostic: no mcphub, LLM, MCP, or UI imports.
+Implements the operation/anchor model behind the `neovim__apply_edit` MCP tool — one call applies a batch of
+`replace_range` / `insert` / `delete_range` ops (and v2 LSP-backed ops), anchored by `line_range`,
+`unique_text`, or `before`/`after`/`inside` modifiers. Ambiguous or missing anchors surface as structured
+candidates instead of silent wrong-location edits.
+
+Key functions:
+- `apply(input)` - Apply a batch of ops; return the structured response object
+
+The mcphub adapter at `lua/mcphub/_native/edit/init.lua` is the only file that bridges this engine to MCP; it
+registers `neovim__apply_edit` on mcphub's existing `neovim` native server via `mcphub.add_tool`. To use it,
+`require'mcphub._native.edit'` from your Neovim config *after* `mcphub.setup{}`.
 
 ### `nvu.path`
 Smart path shortening that progressively abbreviates directory names to fit a target length.
