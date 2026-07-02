@@ -167,6 +167,13 @@ default; matches are returned as candidates if zero or many are found.
 Whitespace inside `text` is significant. Newlines inside `text` are
 allowed and let you anchor on multi-line patterns.
 
+`text` must **not start with a newline**: a leading `\n` belongs to the
+preceding line, so it silently widens the matched range backward by one
+line (your edit would clobber one line too many). This is rejected. A
+**trailing** newline, by contrast, is allowed and useful — it anchors to
+end-of-line, so `"foo\n"` matches the whole line `foo` but not the `foo`
+inside `foobar`.
+
 To pin to a specific match when more than one exists:
 
 ```json
@@ -280,6 +287,13 @@ all of them are replaced by `content`. A `unique_text` anchor only
 *locates* the line(s) — it does not narrow the replacement to the matched
 substring. So `content` must be the complete new line(s), including any
 unchanged text on the line.
+
+`content` (for both `replace_range` and `insert`) is the body of the
+line(s) only: it must **not start or end with a newline**. A boundary
+newline is spliced into the buffer as a spurious blank line (leading →
+a blank line before, trailing → a blank line after), and is rejected.
+Interior newlines are fine for multi-line content; to insert a genuine
+blank line, make it an interior line between non-empty lines.
 
 #### `insert`
 
@@ -534,6 +548,8 @@ are detected before any file is touched, so no partial state can leak.
 | `mutually_exclusive`          | Both `content` and `content_ref` are set on one op.                  |
 | `missing_content`             | Neither `content` nor `content_ref` is set on a `replace_range` / `insert`. |
 | `dangling_content_ref`        | A `content_ref` label does not resolve in `contents`.                |
+| `content_boundary_newline`    | `content` starts or ends with a newline (would splice in a spurious blank line). |
+| `anchor_leading_newline`      | A `unique_text` anchor starts with a newline (would widen the range backward). A *trailing* newline is allowed. |
 | `occurrence_all_disallowed`   | `occurrence: "all"` used on a `replace_range`.                       |
 | `bad_modifier_target`         | `insert` op with a bare base anchor (must be modifier-wrapped).      |
 | `unsupported_op_kind`         | `kind` is a v2 value (`rename_symbol`, `lsp_code_action`) not yet implemented. |

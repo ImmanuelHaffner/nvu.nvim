@@ -203,6 +203,44 @@ describe('nvu.edit.schema', function()
             assert.is_nil(parsed.ops[1].anchor.occurrence)
         end)
 
+        it('rejects a unique_text whose text starts with a newline', function()
+            -- A leading newline silently widens the resolved range backward
+            -- (the \n is the previous line's terminator), so the edit would
+            -- clobber one line too many. Reject at the schema gate.
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'delete_range', path = 'f',
+                    anchor = { by = 'unique_text', text = '\nfoo' } } }
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].anchor.text',
+                schema.ERROR_REASONS.anchor_leading_newline)
+        end)
+
+        it('accepts a unique_text whose text ends with a newline (end-of-line anchor)', function()
+            -- A TRAILING newline is load-bearing: it disambiguates by asserting
+            -- "this is the whole line, ending here" (e.g. "foo\n" matches the
+            -- line "foo" but not the "foo" prefix of "foobar"). It resolves to
+            -- the correct range and must NOT be rejected.
+            local ok, parsed = helpers.validate{
+                ops = { { kind = 'delete_range', path = 'f',
+                    anchor = { by = 'unique_text', text = 'foo\n' } } }
+            }
+            assert.is_true(ok)
+            assert.is.equal('foo\n', parsed.ops[1].anchor.text)
+        end)
+
+        it('rejects a leading-newline unique_text wrapped in an insert modifier', function()
+            -- The check lives on the base anchor, so it fires through `of` too.
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'insert', path = 'f',
+                    anchor = { by = 'after', of = { by = 'unique_text', text = '\nfoo' } },
+                    content = 'x', indent = 'preserve' } }
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].anchor.of.text',
+                schema.ERROR_REASONS.anchor_leading_newline)
+        end)
+
         it('accepts unique_text with occurrence={nth=N}', function()
             local ok, parsed = helpers.validate{
                 ops = { { kind = 'delete_range', path = 'f',
@@ -442,6 +480,55 @@ describe('nvu.edit.schema', function()
             assert.is.equal(schema.WARNING_REASONS.unused_content_label,
                 parsed.warnings[1].reason)
         end)
+
+        it('rejects content with a trailing newline', function()
+            -- A boundary newline in `content` is spliced in as a spurious
+            -- blank line (trailing \n -> blank after). Silent corruption;
+            -- reject at the gate.
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'replace_range', path = 'f',
+                    anchor = { by = 'line_range', start = 1, ['end'] = 1 },
+                    content = 'foo\n', indent = 'preserve' } }
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].content',
+                schema.ERROR_REASONS.content_boundary_newline)
+        end)
+
+        it('rejects content with a leading newline', function()
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'insert', path = 'f',
+                    anchor = { by = 'after', of = { by = 'line_range', start = 1, ['end'] = 1 } },
+                    content = '\nfoo', indent = 'preserve' } }
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].content',
+                schema.ERROR_REASONS.content_boundary_newline)
+        end)
+
+        it('accepts content with interior newlines (multi-line replacement)', function()
+            local ok, parsed = helpers.validate{
+                ops = { { kind = 'replace_range', path = 'f',
+                    anchor = { by = 'line_range', start = 1, ['end'] = 1 },
+                    content = 'foo\nbar', indent = 'preserve' } }
+            }
+            assert.is_true(ok)
+            assert.is.equal('foo\nbar', parsed.ops[1].content)
+        end)
+
+        it('rejects a boundary newline supplied via content_ref', function()
+            -- The check runs on the resolved string, so it fires for
+            -- content_ref exactly as for inline content.
+            local ok, errors = helpers.validate{
+                ops = { { kind = 'replace_range', path = 'f',
+                    anchor = { by = 'line_range', start = 1, ['end'] = 1 },
+                    content_ref = 'body', indent = 'preserve' } },
+                contents = { body = 'foo\n' },
+            }
+            assert.is_false(ok)
+            assert_error(errors, 'ops[0].content_ref',
+                schema.ERROR_REASONS.content_boundary_newline)
+        end)
     end)
 
     ----------------------------------------------------------------
@@ -543,7 +630,7 @@ describe('nvu.edit.schema', function()
                       anchor = { by = 'unique_text', text = 'obsolete', occurrence = 'all' } },
                 },
                 contents = {
-                    helper = 'function helper()\n    return true\nend\n',
+                    helper = 'function helper()\n    return true\nend',
                 },
             }
             assert.is_true(ok)

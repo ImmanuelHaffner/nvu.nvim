@@ -77,6 +77,8 @@ M.ERROR_REASONS = {
     bad_pattern               = 'bad_pattern',
     unknown_kind              = 'unknown_kind',
     mutually_exclusive        = 'mutually_exclusive',           -- both `content` and `content_ref` given
+    content_boundary_newline  = 'content_boundary_newline',     -- `content` starts or ends with a newline (spurious blank line)
+    anchor_leading_newline    = 'anchor_leading_newline',       -- `unique_text.text` starts with a newline (widens range backward)
     missing_content           = 'missing_content',              -- neither `content` nor `content_ref`
     dangling_content_ref      = 'dangling_content_ref',         -- ref does not resolve in `contents`
     occurrence_all_disallowed = 'occurrence_all_disallowed',    -- replace_range + occurrence: "all"
@@ -325,6 +327,30 @@ local function validate_base_anchor(anchor, path, errors, op_index)
             hint = '`text` is the substring to search for; it must appear exactly once unless `occurrence` is set',
         }) then return nil end
 
+
+        -- A LEADING newline in `text` silently widens the resolved range
+        -- backward: the `\n` is the *previous* line's terminator, so
+        -- `byte_to_line` maps the match start onto that previous line, pulling
+        -- it into the range. A `replace_range`/`delete_range` anchored this way
+        -- then clobbers the preceding line — a silent off-by-one. Reject it.
+        -- (A TRAILING newline is deliberately allowed: it is a load-bearing
+        -- end-of-line disambiguator — e.g. `text: "foo\n"` matches the whole
+        -- line `foo` but not the `foo` prefix of a `foobar` line.)
+        if anchor.text:sub(1, 1) == '\n' then
+            table.insert(errors, err(path .. '.text', M.ERROR_REASONS.anchor_leading_newline,
+                '`text` must not start with a newline',
+                {
+                    expected = 'a substring that does not begin with \\n',
+                    got = truncate(anchor.text),
+                    op_index = op_index,
+                    hint = 'a leading newline silently pulls the preceding line into the matched range, '
+                        .. 'so the edit would clobber one line too many. Drop the leading \\n. '
+                        .. 'If you meant to include the previous line, put its text before the newline. '
+                        .. '(A TRAILING newline is fine and useful: it anchors to end-of-line, '
+                        .. 'e.g. "foo\\n" matches the whole line "foo" but not the "foo" in "foobar".)',
+                }))
+            return nil
+        end
         local parsed = { by = 'unique_text', text = anchor.text }
 
         if anchor.occurrence ~= nil then
@@ -460,6 +486,40 @@ local OP_KIND_OVERVIEW =
     'replace_range overwrites a range; insert adds content at a position; delete_range removes a range. '
     .. 'rename_symbol and lsp_code_action are accepted by the schema but not yet implemented.'
 
+--- Reject content whose resolved string starts or ends with a newline.
+---
+--- Unlike a `unique_text` anchor (which is *matched* against the file), `content`
+--- is pure output: its bytes are split on `\n` and spliced into the buffer. A
+--- leading `\n` injects a blank line *before* the content; a trailing `\n`
+--- injects one *after*. Either is a silent, plausible-looking corruption — the
+--- edit "succeeds" but the file grows a stray empty line. Interior newlines are
+--- fine and expected (a multi-line replacement). We reject only the boundaries.
+---
+--- @param content string   The resolved content string (inline or from `contents`).
+--- @param field_path string Full JSON path of the offending field for the error.
+--- @param op_index integer
+--- @param errors table[]
+--- @return boolean ok  false if a boundary newline was found (error pushed).
+local function check_content_boundary_newline(content, field_path, op_index, errors)
+    if content:sub(1, 1) ~= '\n' and content:sub(-1) ~= '\n' then return true end
+    local where = content:sub(1, 1) == '\n'
+        and (content:sub(-1) == '\n' and 'starts and ends' or 'starts')
+        or 'ends'
+    table.insert(errors, err(field_path, M.ERROR_REASONS.content_boundary_newline,
+        string.format('`content` must not start or end with a newline (it %s with one)', where),
+        {
+            expected = 'content with no leading or trailing newline',
+            op_index = op_index,
+            hint = 'a boundary newline is spliced into the buffer as a spurious blank line '
+                .. '(leading \\n → blank line before, trailing \\n → blank line after). '
+                .. '`content` is the line body only; do not terminate it with \\n. '
+                .. 'Interior newlines are fine for multi-line content. To add a genuine blank '
+                .. 'line, include it as an interior line between non-empty lines.',
+        }))
+    return false
+end
+
+
 --- Validate the `content` / `content_ref` pair on an op.
 --- Returns (resolved_inline_content, resolved_label, ok). Exactly one of the
 --- first two is non-nil on success.
@@ -499,6 +559,9 @@ local function validate_content_pair(op, op_path, op_index, contents, used_label
             op_index = op_index,
             hint = '`content` is the replacement/insertion text as a single string',
         }) then return nil, nil, false end
+        if not check_content_boundary_newline(op.content, op_path .. '.content', op_index, errors) then
+            return nil, nil, false
+        end
         return op.content, nil, true
     end
 
@@ -540,6 +603,11 @@ local function validate_content_pair(op, op_path, op_index, contents, used_label
                     or 'either rename the ref to one of the available labels above, '
                         .. 'or add an entry under `contents`',
             }))
+        return nil, nil, false
+    end
+
+    if not check_content_boundary_newline(
+            contents[op.content_ref], op_path .. '.content_ref', op_index, errors) then
         return nil, nil, false
     end
 

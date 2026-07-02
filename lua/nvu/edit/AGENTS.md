@@ -164,6 +164,33 @@ broadcasting one piece of content or one zero-width position across
 multiple match sites are ambiguous, and the resolver would either pick
 silently or crash; the schema-level refusal preempts both.
 
+
+### Newline ownership (silent-corruption guards)
+
+Two schema-layer checks exist because both failure modes are otherwise
+silent — the edit "succeeds" and the on-disk file is wrong:
+
+* `content_boundary_newline` — `content` (inline or resolved via
+  `content_ref`) may not start or end with `\n`. The applier's
+  `content_to_lines` splits on `\n` with `trimempty = false`, so a
+  boundary newline becomes an extra empty element (`"foo\n"` →
+  `{"foo", ""}`) and is spliced in as a spurious blank line. Interior
+  newlines are legitimate multi-line content. Checked in
+  `validate_content_pair` at both return sites (see
+  `check_content_boundary_newline`).
+* `anchor_leading_newline` — a `unique_text` anchor may not *start* with
+  `\n`. `byte_to_line` maps the leading `\n` (the previous line's
+  terminator) onto that previous line, silently widening the resolved
+  range backward so a `replace_range`/`delete_range` clobbers one line
+  too many. A *trailing* `\n` is deliberately allowed — it is a
+  load-bearing end-of-line disambiguator (`"foo\n"` matches the whole
+  line `foo` but not the `foo` in `foobar`) and resolves to the correct
+  range. Checked in `validate_base_anchor`'s `unique_text` branch.
+
+The asymmetry is why these are two distinct reasons, not one: `content`
+rejects both boundaries (it is pure output), `unique_text` rejects only
+the leading one (a trailing newline is useful there).
+
 ### Baseline fingerprint is mandatory
 
 Every op carries `baseline_fingerprint`. The LLM cannot bypass it.
