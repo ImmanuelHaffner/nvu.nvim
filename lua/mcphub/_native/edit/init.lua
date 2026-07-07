@@ -284,18 +284,20 @@ local apply_edit_input_schema = {
     type = 'object',
     properties = {
         ops = {
+            description = 'Array of edit operations, each with a kind (replace_range | insert | delete_range), path, anchor, baseline_fingerprint, and (for replace/insert) content + indent. See the tool description for the full op shape.',
             type = 'array',
             minItems = 1,
             items = op_schema,
         },
         contents = {
+            description = 'Optional sidecar map of { label = string } for bulk multi-line content. An op references an entry via content_ref = label instead of inline content.',
             type = 'object',
             -- Keys must match the identifier-shape label pattern. We declare it
             -- on `propertyNames`; values are plain strings.
             propertyNames = { pattern = '^[a-zA-Z_][a-zA-Z0-9_]*$' },
             additionalProperties = { type = 'string' },
         },
-        dry_run     = { type = 'boolean' },
+        dry_run = { description = 'Optional. If true, resolve and report without applying any edit.', type = 'boolean' },
     },
     required = { 'ops' },
     additionalProperties = false,
@@ -421,7 +423,7 @@ end
 local read_input_schema = {
     type = 'object',
     properties = {
-        path = { type = 'string', minLength = 1 },
+        path = { description = 'Absolute path of the file to read.', type = 'string', minLength = 1 },
         -- Optional 1-based-inclusive range projection. The fingerprint is
         -- ALWAYS computed over the whole file; these fields only restrict
         -- the returned `content`. See `read_description` below for the
@@ -429,8 +431,8 @@ local read_input_schema = {
         -- start_line <= total_lines) lives in the engine, not here —
         -- JSON Schema can't express it cleanly and the engine's
         -- runtime check is authoritative.
-        start_line = { type = 'integer', minimum = 1 },
-        ['end_line'] = { type = 'integer', minimum = 1 },
+        start_line = { description = 'Optional. 1-based inclusive first line to return (default 1). Does not affect the whole-file fingerprint.', type = 'integer', minimum = 1 },
+        ['end_line'] = { description = 'Optional. 1-based inclusive last line to return (default: last line; clamps past EOF). Does not affect the whole-file fingerprint.', type = 'integer', minimum = 1 },
     },
     required = { 'path' },
     additionalProperties = false,
