@@ -101,6 +101,7 @@ M.ERROR_REASONS = {
 M.WARNING_REASONS = {
     unused_content_label   = 'unused_content_label',
     indent_detect_fallback = 'indent_detect_fallback',          -- "detect" treated as "match_anchor" for now
+    content_encoding_lossy = 'content_encoding_lossy',          -- response echoed ill-formed UTF-8; bytes replaced with U+FFFD
 }
 
 --------------------------------------------------------------------------------

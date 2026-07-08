@@ -299,6 +299,16 @@ the same way every time.
 **`read.lua`** — engine behind `neovim__read_with_fingerprint`. Loads
 a file into a buffer, normalises content, computes fingerprint.
 
+**`json.lua`** — UTF-8-safe JSON encoding for tool responses.
+`M.scrub_string(s) → (clean, n)` scrubs one string to well-formed
+UTF-8, replacing each ill-formed byte with U+FFFD and returning the
+count. `M.scrub(value) → (copy, n)` does it recursively over a table
+(keys and values), cycle-safe, without mutating the input.
+`M.safe_encode(value) → (ok, encoded_or_err, n)` is the drop-in for
+`pcall(vim.json.encode, …)`. Pure; no mcphub. See the *Footguns*
+entry "vim.json.encode passes ill-formed UTF-8 through unescaped" for
+why this exists.
+
 **`applier.lua`** — sequences files, drives one at a time via the
 caller-supplied `drive_file`, classifies per-block outcomes into
 `applied[]` / `rejected[]` / `failed[]`. Knows nothing about mcphub.
@@ -459,6 +469,34 @@ makes headless test runs fast — no LSPs attach to scratch buffers in
 `-u NONE` mode. Don't refactor the empty-clients case away without
 preserving this property; otherwise the suite slows by ~1s per
 file-edit test.
+
+### `vim.json.encode` passes ill-formed UTF-8 through unescaped
+
+Neovim's `vim.json.encode` does NOT validate UTF-8. It copies raw
+string bytes into the output verbatim, so a byte sequence that decodes
+to a UTF-16 surrogate (U+D800–U+DFFF) — which appears in the wild as
+WTF-8 / CESU-8 (`0xED 0xA0..0xBF 0x80..0xBF`) — lands in the JSON
+string unescaped. It does NOT raise on this, so a `pcall` guard around
+it catches nothing.
+
+Our responses echo file content back (anchor candidates, context
+snippets, rejected-hunk previews, error `message`/`hint`). If the
+edited file contains such bytes, they flow into the tool result. The
+failure is DEFERRED and brutal: the poisoned string is stored in the
+CodeCompanion chat history, and the *next* HTTP submit — not the edit
+itself — is rejected by the provider's strict JSON parser with "str is
+not valid UTF-8: surrogates not allowed". Every subsequent turn then
+fails until the message is removed. It looks like "apply_edit broke the
+chat" even though apply_edit returned fine.
+
+The fix lives in `lua/nvu/edit/json.lua`: both MCP handlers in
+`lua/mcphub/_native/edit/init.lua` scrub the response to well-formed
+UTF-8 (bad bytes → U+FFFD) before encoding, and surface a
+`content_encoding_lossy` warning to the LLM when any byte was replaced
+(via `warnings[]` on apply_edit, `encoding_warning` on
+read_with_fingerprint). Do NOT go back to a bare
+`pcall(vim.json.encode, response)` at either handler — that reopens
+this bug. Covered by `tests/edit/json_spec.lua`.
 
 ## Deferred work
 

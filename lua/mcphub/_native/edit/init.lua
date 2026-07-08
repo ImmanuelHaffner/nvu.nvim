@@ -34,6 +34,7 @@ end
 
 local edit      = require'nvu.edit'
 local edit_read = require'nvu.edit.read'
+local edit_json = require'nvu.edit.json'
 
 --------------------------------------------------------------------------------
 -- Anchor schemas
@@ -398,7 +399,30 @@ local apply_edit_tool = {
         -- encodes the response and dispatches it on the mcphub `res` channel.
         local ui_backend = require'mcphub._native.edit.ui_backend'
         edit.apply(req.params or {}, ui_backend.drive_file, function(response)
-            local ok_json, encoded = pcall(vim.json.encode, response)
+            -- Scrub the response to well-formed UTF-8 before encoding.
+            -- `vim.json.encode` passes ill-formed bytes (e.g. WTF-8
+            -- surrogate encodings echoed from file content) through
+            -- unescaped, which a strict downstream JSON parser rejects and
+            -- which wedges the whole chat on the next request. `replaced`
+            -- counts how many bytes were swapped for U+FFFD.
+            local scrubbed, replaced = edit_json.scrub(response)
+            if replaced > 0 then
+                -- Surface the lossy echo to the LLM as a non-fatal warning
+                -- so it knows the content it sees is not byte-faithful.
+                scrubbed.warnings = scrubbed.warnings or {}
+                table.insert(scrubbed.warnings, {
+                    reason  = 'content_encoding_lossy',
+                    message = string.format(
+                        '%d byte(s) of ill-formed UTF-8 in the affected file '
+                        .. 'were shown as U+FFFD (\239\191\189) replacement '
+                        .. 'characters in this response.', replaced),
+                    hint    = 'the file contains bytes that are not valid UTF-8 '
+                        .. '(e.g. WTF-8/CESU-8 surrogate encodings or corrupted '
+                        .. 'text); any content echoed back at those positions is '
+                        .. 'lossy, so do not treat it as byte-faithful.',
+                })
+            end
+            local ok_json, encoded = pcall(vim.json.encode, scrubbed)
             if not ok_json then
                 res:error('apply_edit: failed to encode response', { response = response })
                 return
@@ -459,7 +483,30 @@ local read_with_fingerprint_tool = {
         local response = edit_read.read_with_fingerprint(
             params.path,
             { start_line = params.start_line, end_line = params.end_line })
-        local ok_json, encoded = pcall(vim.json.encode, response)
+        -- Scrub to well-formed UTF-8 before encoding. The file `content`
+        -- echoed here can contain ill-formed bytes (WTF-8/CESU-8 surrogate
+        -- encodings, corrupted text) that `vim.json.encode` would pass
+        -- through unescaped, poisoning the chat's next request. `replaced`
+        -- counts bytes swapped for U+FFFD.
+        local scrubbed, replaced = edit_json.scrub(response)
+        if replaced > 0 then
+            -- This response shape has no `warnings[]` array; attach a
+            -- top-level note so the LLM knows the returned content is lossy
+            -- and must not be treated as byte-faithful (e.g. do not build a
+            -- `unique_text` anchor from a span that includes a U+FFFD).
+            scrubbed.encoding_warning = {
+                reason  = 'content_encoding_lossy',
+                message = string.format(
+                    '%d byte(s) of ill-formed UTF-8 in this file were shown '
+                    .. 'as U+FFFD (\239\191\189) replacement characters in the '
+                    .. 'returned content.', replaced),
+                hint    = 'the file is not valid UTF-8 at those positions; the '
+                    .. 'returned `content` is lossy there. Do not anchor edits '
+                    .. '(unique_text) on a span containing a replacement '
+                    .. 'character \226\128\148 it will not match the real bytes.',
+            }
+        end
+        local ok_json, encoded = pcall(vim.json.encode, scrubbed)
         if not ok_json then
             return res:error('read_with_fingerprint: failed to encode response', { response = response })
         end
