@@ -77,7 +77,7 @@ M.ERROR_REASONS = {
     bad_pattern               = 'bad_pattern',
     unknown_kind              = 'unknown_kind',
     mutually_exclusive        = 'mutually_exclusive',           -- both `content` and `content_ref` given
-    content_boundary_newline  = 'content_boundary_newline',     -- `content` starts or ends with a newline (spurious blank line)
+    content_boundary_newline  = 'content_boundary_newline',     -- DISABLED 2026-07-15: `content` starts or ends with a newline (reason kept but check inert)
     anchor_leading_newline    = 'anchor_leading_newline',       -- `unique_text.text` starts with a newline (widens range backward)
     missing_content           = 'missing_content',              -- neither `content` nor `content_ref`
     dangling_content_ref      = 'dangling_content_ref',         -- ref does not resolve in `contents`
@@ -492,9 +492,17 @@ local OP_KIND_OVERVIEW =
 --- Unlike a `unique_text` anchor (which is *matched* against the file), `content`
 --- is pure output: its bytes are split on `\n` and spliced into the buffer. A
 --- leading `\n` injects a blank line *before* the content; a trailing `\n`
---- injects one *after*. Either is a silent, plausible-looking corruption — the
---- edit "succeeds" but the file grows a stray empty line. Interior newlines are
---- fine and expected (a multi-line replacement). We reject only the boundaries.
+--- injects one *after*.
+---
+--- TEMPORARILY DISABLED (2026-07-15): the boundary-newline rejection is switched
+--- off behind an early `return true` while we bake in prod experience. LLMs
+--- genuinely need to prepend/append a blank line to `content` -- e.g. inserting
+--- a new function or test case that must be visually separated by an empty line
+--- -- and the applier's `content_to_lines` already round-trips a boundary `\n`
+--- deterministically (trailing `\n` -> a blank line after, leading `\n` -> a
+--- blank line before). The rejection body below is left INTACT, not deleted, so
+--- it can be re-enabled by removing the early `return true` if feedback shows
+--- the boundary newline causes more harm than good.
 ---
 --- @param content string   The resolved content string (inline or from `contents`).
 --- @param field_path string Full JSON path of the offending field for the error.
@@ -502,6 +510,8 @@ local OP_KIND_OVERVIEW =
 --- @param errors table[]
 --- @return boolean ok  false if a boundary newline was found (error pushed).
 local function check_content_boundary_newline(content, field_path, op_index, errors)
+    -- DISABLED: allow leading/trailing newlines in content (see docstring above).
+    if true then return true end
     if content:sub(1, 1) ~= '\n' and content:sub(-1) ~= '\n' then return true end
     local where = content:sub(1, 1) == '\n'
         and (content:sub(-1) == '\n' and 'starts and ends' or 'starts')

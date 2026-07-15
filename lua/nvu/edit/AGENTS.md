@@ -165,20 +165,25 @@ multiple match sites are ambiguous, and the resolver would either pick
 silently or crash; the schema-level refusal preempts both.
 
 
-### Newline ownership (silent-corruption guards)
+### Newline ownership
 
-Two schema-layer checks exist because both failure modes are otherwise
-silent — the edit "succeeds" and the on-disk file is wrong:
+One active schema-layer check plus one temporarily-disabled one:
 
-* `content_boundary_newline` — `content` (inline or resolved via
-  `content_ref`) may not start or end with `\n`. The applier's
-  `content_to_lines` splits on `\n` with `trimempty = false`, so a
-  boundary newline becomes an extra empty element (`"foo\n"` →
-  `{"foo", ""}`) and is spliced in as a spurious blank line. Interior
-  newlines are legitimate multi-line content. Checked in
-  `validate_content_pair` at both return sites (see
-  `check_content_boundary_newline`).
-* `anchor_leading_newline` — a `unique_text` anchor may not *start* with
+* `content_boundary_newline` — **TEMPORARILY DISABLED (2026-07-15).** The
+  check (`check_content_boundary_newline`) is gated behind an early
+  `if true then return true end`; the rejection body and the
+  `ERROR_REASONS` entry are kept intact so it can be re-enabled by
+  removing that early return. Rationale: a boundary `\n` in `content` is a
+  legitimate request to add a blank line at that edge (LLMs need to
+  visually separate an inserted function or test case). The applier's
+  `content_to_lines` splits on `\n` with `trimempty = false`, so `"foo\n"`
+  -> `{"foo", ""}` — a deterministic trailing blank line, not corruption.
+  We are baking this in prod before deciding whether to delete the check.
+* `anchor_leading_newline` — (still active) a `unique_text` anchor may not
+  *start* with `\n`. `byte_to_line` maps the leading `\n` (the previous
+  line's terminator) onto that previous line, silently widening the
+  resolved range backward so a `replace_range`/`delete_range` clobbers one
+  line too many. A *trailing* `\n` is deliberately allowed — it is a
   `\n`. `byte_to_line` maps the leading `\n` (the previous line's
   terminator) onto that previous line, silently widening the resolved
   range backward so a `replace_range`/`delete_range` clobbers one line

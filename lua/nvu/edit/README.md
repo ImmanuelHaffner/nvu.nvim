@@ -289,11 +289,12 @@ substring. So `content` must be the complete new line(s), including any
 unchanged text on the line.
 
 `content` (for both `replace_range` and `insert`) is the body of the
-line(s) only: it must **not start or end with a newline**. A boundary
-newline is spliced into the buffer as a spurious blank line (leading →
-a blank line before, trailing → a blank line after), and is rejected.
-Interior newlines are fine for multi-line content; to insert a genuine
-blank line, make it an interior line between non-empty lines.
+line(s). A leading or trailing newline adds a blank line at that edge:
+a leading `\n` puts a blank line **before** your text, a trailing `\n`
+puts one **after** it. This is allowed and useful — append `\n` to a
+newly inserted function or test case to leave a blank separator line —
+so use a boundary newline deliberately and omit it when you do not want
+a blank line. Interior newlines are fine for multi-line content.
 
 #### `insert`
 
@@ -548,7 +549,7 @@ are detected before any file is touched, so no partial state can leak.
 | `mutually_exclusive`          | Both `content` and `content_ref` are set on one op.                  |
 | `missing_content`             | Neither `content` nor `content_ref` is set on a `replace_range` / `insert`. |
 | `dangling_content_ref`        | A `content_ref` label does not resolve in `contents`.                |
-| `content_boundary_newline`    | `content` starts or ends with a newline (would splice in a spurious blank line). |
+| `content_boundary_newline`    | _(currently disabled)_ `content` started or ended with a newline. A boundary newline now adds a blank line at that edge instead of being rejected. |
 | `anchor_leading_newline`      | A `unique_text` anchor starts with a newline (would widen the range backward). A *trailing* newline is allowed. |
 | `occurrence_all_disallowed`   | `occurrence: "all"` used on a `replace_range`.                       |
 | `bad_modifier_target`         | `insert` op with a bare base anchor (must be modifier-wrapped).      |

@@ -337,11 +337,11 @@ These ops are line-granular: anchors resolve to whole lines, and edits add, repl
 CONTENT for replace/insert is supplied as exactly one of `content` (inline, for short text) or `content_ref` → `contents[label]` (for multi-line bulk). `delete_range` takes no content.
 
 NEWLINE OWNERSHIP: a newline separates lines; it is never part of a line's own text.
-This has three consequences you must respect, because getting them wrong corrupts the file silently or is rejected outright.
-(1) `content` is the body of the line(s) only — never start or end it with `\n`.
-A leading or trailing `\n` in `content` is spliced in as a spurious blank line (leading -> a blank line before your text, trailing -> a blank line after), so the tool REJECTS it.
+This has three consequences you must respect, because getting them wrong corrupts the file silently or changes where an edit lands.
+(1) `content` is the body of the line(s); a leading or trailing `\n` adds a blank line at that edge (leading `\n` -> a blank line BEFORE your text, trailing `\n` -> a blank line AFTER it).
+Use this deliberately to separate an inserted block from its surroundings — e.g. append `\n` to a new function or test case so a blank line follows it.
+Do NOT add a boundary `\n` you did not intend: it becomes a real blank line in the file.
 Interior newlines are fine and expected for multi-line content.
-To add a real blank line, make it an interior line between non-empty lines.
 (2) A `unique_text` anchor must NOT start with `\n`: a leading newline belongs to the PREVIOUS line, so it silently pulls that line into the matched range and your edit would clobber one line too many — this is REJECTED.
 A TRAILING `\n` in `unique_text`, by contrast, is allowed and useful: it anchors to end-of-line, so `text: "foo\n"` matches the whole line `foo` but not the `foo` inside `foobar`.
 (3) For `between`, the engine supplies the seam newline itself (it matches `before_text` + newline + `after_text`), so `before_text` must not end with `\n` and `after_text` must not start with one.

@@ -481,29 +481,29 @@ describe('nvu.edit.schema', function()
                 parsed.warnings[1].reason)
         end)
 
-        it('rejects content with a trailing newline', function()
-            -- A boundary newline in `content` is spliced in as a spurious
-            -- blank line (trailing \n -> blank after). Silent corruption;
-            -- reject at the gate.
-            local ok, errors = helpers.validate{
+        it('accepts content with a trailing newline (boundary check disabled)', function()
+            -- The boundary-newline rejection is TEMPORARILY DISABLED (see
+            -- check_content_boundary_newline in schema.lua): a trailing \n is a
+            -- legitimate request to append a blank line after the content (e.g.
+            -- separating a newly inserted function). The applier round-trips it.
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content = 'foo\n', indent = 'preserve' } }
             }
-            assert.is_false(ok)
-            assert_error(errors, 'ops[0].content',
-                schema.ERROR_REASONS.content_boundary_newline)
+            assert.is_true(ok)
+            assert.is.equal('foo\n', parsed.ops[1].content)
         end)
 
-        it('rejects content with a leading newline', function()
-            local ok, errors = helpers.validate{
+        it('accepts content with a leading newline (boundary check disabled)', function()
+            -- A leading \n prepends a blank line before the content.
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'insert', path = 'f',
                     anchor = { by = 'after', of = { by = 'line_range', start = 1, ['end'] = 1 } },
                     content = '\nfoo', indent = 'preserve' } }
             }
-            assert.is_false(ok)
-            assert_error(errors, 'ops[0].content',
-                schema.ERROR_REASONS.content_boundary_newline)
+            assert.is_true(ok)
+            assert.is.equal('\nfoo', parsed.ops[1].content)
         end)
 
         it('accepts content with interior newlines (multi-line replacement)', function()
@@ -516,18 +516,15 @@ describe('nvu.edit.schema', function()
             assert.is.equal('foo\nbar', parsed.ops[1].content)
         end)
 
-        it('rejects a boundary newline supplied via content_ref', function()
-            -- The check runs on the resolved string, so it fires for
-            -- content_ref exactly as for inline content.
-            local ok, errors = helpers.validate{
+        it('accepts a boundary newline supplied via content_ref (check disabled)', function()
+            local ok, parsed = helpers.validate{
                 ops = { { kind = 'replace_range', path = 'f',
                     anchor = { by = 'line_range', start = 1, ['end'] = 1 },
                     content_ref = 'body', indent = 'preserve' } },
                 contents = { body = 'foo\n' },
             }
-            assert.is_false(ok)
-            assert_error(errors, 'ops[0].content_ref',
-                schema.ERROR_REASONS.content_boundary_newline)
+            assert.is_true(ok)
+            assert.is.equal('body', parsed.ops[1].content_ref)
         end)
     end)
 
