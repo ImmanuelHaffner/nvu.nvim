@@ -14,7 +14,6 @@ A collection of utility functions for Neovim plugin and configuration developmen
 - **Highlight utilities** - Query highlight group attributes
 - **Telescope integration** - Enhanced entry makers, previewers, and adaptive pickers extension
 - **CodeCompanion integration** - Editor context tool and variable for LLM-assisted editing
-- **MCP tools for LLM file editing** - Structured, batch-atomic `neovim__apply_edit` and `neovim__read_with_fingerprint` tools (via mcphub.nvim) that replace brittle SEARCH/REPLACE editing
 - **lazy.nvim integration** - Programmatic equivalent of `:Lazy check` for agent-driven plugin-upgrade workflows
 
 ## Installation
@@ -395,58 +394,6 @@ local info = ext.get_buffer_info(bufnr)
 
 The CodeCompanion extension requires:
 - [codecompanion.nvim](https://github.com/olimorris/codecompanion.nvim)
-
----
-
-## MCP Tools: Structured File Editing
-
-nvu.nvim ships a structured, batch-atomic file-edit engine for LLM-assisted editing, exposed as two MCP tools registered on [mcphub.nvim](https://github.com/ravitemer/mcphub.nvim)'s existing `neovim` native server. They replace the brittle SEARCH/REPLACE protocol with a structured **operation/anchor** model: the LLM submits a batch of edits, each located by an anchor rather than by fuzzy-matched search text.
-
-| Tool | What it does |
-|---|---|
-| `neovim__apply_edit` | Apply a batch of structured edits (`replace_range` / `insert` / `delete_range`) across one or more files. |
-| `neovim__read_with_fingerprint` | Read a file and return its content plus a baseline fingerprint the LLM echoes back on every edit. |
-
-### Why
-
-SEARCH/REPLACE-style tools waste turns and produce silent wrong-location edits. This engine instead:
-
-- **Locates edits with structured anchors** - a `line_range`, a `unique_text` substring (must match uniquely, or return structured candidates), or a `before` / `after` / `between` positional modifier. No fuzzy matching: either an anchor resolves exactly, or the batch is refused with candidates and a hint.
-- **Closes the read-then-edit race** - every op carries a `baseline_fingerprint` from `read_with_fingerprint`; if the file changed underneath, the batch is refused (`stale_fingerprint`) instead of clobbering.
-- **Is plan-atomic and reviewable** - if any anchor fails to resolve, no buffer is touched. Otherwise you review each hunk interactively (per-hunk accept/reject via mcphub's `EditUI`), and outcomes come back per-op in `applied[]` / `rejected[]`.
-- **Operates buffer-first** - both tools work on Neovim buffers (loaded or found), so modified buffers win over disk and saving still fires `BufWritePre` / format-on-save.
-
-### Setup
-
-Register the tools by requiring the mcphub adapter **after** `mcphub.setup{}` has run:
-
-```lua
--- after require('mcphub').setup{ ... }
-require'mcphub._native.edit'
-```
-
-This calls `mcphub.add_tool('neovim', ...)` for both tools. To use them from a CodeCompanion chat, open a **fresh** chat after registration - CodeCompanion snapshots the MCP tool list at chat-session start.
-
-Because `apply_edit` requires a baseline fingerprint on every op, disable other read paths (`neovim__read_file`) on the mcphub `neovim` server so `read_with_fingerprint` is the canonical read - any other read path is a footgun.
-
-### Direct (non-MCP) use
-
-The engine is pure Lua and client-agnostic; call it without MCP:
-
-```lua
-require'nvu.edit'.apply(input, drive_file, on_complete)
-```
-
-The MCP tools wrap this with a default `drive_file` that opens the hunk-review UI; other callers can supply any conforming driver.
-
-### Full reference
-
-See [`lua/nvu/edit/README.md`](lua/nvu/edit/README.md) for the complete protocol - anchors, operations, batch ordering, content sources, the response shape, and error recovery. Maintenance and design notes live in [`lua/nvu/edit/AGENTS.md`](lua/nvu/edit/AGENTS.md).
-
-### Dependencies
-
-The MCP tools require:
-- [mcphub.nvim](https://github.com/ravitemer/mcphub.nvim)
 
 ---
 
