@@ -36,10 +36,11 @@ local function fan_out_to_chats(event)
     local chats = cc.buf_get_chat() -- no arg → list of all live chats
     if type(chats) ~= "table" then return end
 
+    local content = ('<neovimContext>%s</neovimContext>'):format(event.text)
     for _, entry in ipairs(chats) do
         local chat = entry.chat
         if chat and chat.bufnr and vim.api.nvim_buf_is_loaded(chat.bufnr) then
-            chat:add_message({ role = SYSTEM_ROLE, content = event.text })
+            chat:add_message({ role = SYSTEM_ROLE, content = content })
         end
     end
 end
